@@ -51,9 +51,23 @@ def main():
     excel_path = find_first(["*.xlsx", "*.xls"])
 
     if not excel_path:
-        print("  ❌ No Excel pricing file found in data/inputs/")
+        print("  [X] No Excel pricing file found in data/inputs/")
         print("  Please add a pricing spreadsheet (e.g., ULP_BID_SHEET_2022.xlsx)")
         print("\nUsing demo mode with sample pricing...")
+        use_demo = True
+    else:
+        try:
+            price_catalog = load_pricing_from_excel(excel_path)
+            print(f"  [OK] Loaded {len(price_catalog)} pricing items from {excel_path.name}")
+            use_demo = False
+        except Exception as e:
+            print(f"  WARNING: Could not parse {excel_path.name}")
+            print(f"  Error: {str(e)[:100]}...")
+            print("  (Your Excel may have a custom format - will use demo pricing)")
+            print("\nUsing demo mode with sample pricing...")
+            use_demo = True
+
+    if use_demo:
         # For demo, we'll create some sample items
         from src.models.items import PriceItem
         price_catalog = [
@@ -67,9 +81,7 @@ def main():
             PriceItem(code="BOND-6", name="Bonding Wire #6 AWG", material_type="Copper",
                      unit="ft", unit_price=2.00, labor_rate=1.50),
         ]
-    else:
-        price_catalog = load_pricing_from_excel(excel_path)
-        print(f"  ✓ Loaded {len(price_catalog)} pricing items from {excel_path.name}")
+        print(f"  [OK] Loaded {len(price_catalog)} demo pricing items")
 
     # Step 2: Parse spec PDF (optional - we'll use sample data for demo)
     print("\nStep 2: Parsing Project Specifications...")
@@ -77,10 +89,10 @@ def main():
 
     if pdf_path:
         spec_terms = extract_spec_terms(pdf_path)
-        print(f"  ✓ Scanned {pdf_path.name}")
+        print(f"  [OK] Scanned {pdf_path.name}")
         print(f"  Found references: {', '.join(list(spec_terms.keys())[:5])}...")
     else:
-        print("  ℹ No PDF found - using sample project data")
+        print("  [INFO] No PDF found - using sample project data")
 
     # Step 3: Define project (in real use, this comes from PDF + user input)
     print("\nStep 3: Setting Up Project...")
@@ -107,7 +119,7 @@ def main():
     calculator = BidCalculator(price_catalog, compliance_code=compliance_code)
     bid = calculator.calculate_bid(project_data)
 
-    print(f"  ✓ Bid calculated with {len(bid.sections)} sections")
+    print(f"  [OK] Bid calculated with {len(bid.sections)} sections")
     for section in bid.sections:
         print(f"    - {section.name}: {len(section.line_items)} items, ${section.section_total:,.2f}")
 
@@ -120,7 +132,7 @@ def main():
     excel_exporter = ExcelBidExporter()
     excel_output = OUTPUTS / f"bid_{project_data['project_name'].replace(' ', '_')}.xlsx"
     excel_exporter.export_bid(bid, excel_output)
-    print(f"  ✓ Excel saved to: {excel_output}")
+    print(f"  [OK] Excel saved to: {excel_output}")
 
     # Step 6: Export to PDF
     print("\nStep 6: Generating PDF Submittal...")
@@ -135,11 +147,11 @@ def main():
     )
     pdf_output = OUTPUTS / f"submittal_{project_data['project_name'].replace(' ', '_')}.pdf"
     pdf_exporter.export_submittal(bid, pdf_output, compliance_code)
-    print(f"  ✓ PDF saved to: {pdf_output}")
+    print(f"  [OK] PDF saved to: {pdf_output}")
 
     # Done!
     print("\n" + "=" * 60)
-    print("  ✅ BID PACKAGE COMPLETE!")
+    print("  [SUCCESS] BID PACKAGE COMPLETE!")
     print("=" * 60)
     print(f"\nOutputs saved to: {OUTPUTS}")
     print(f"  - {excel_output.name}")
