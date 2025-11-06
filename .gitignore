@@ -6,3 +6,4 @@ data/outputs/
 .idea/
 .vscode/
 /nul
+/database/app.db
