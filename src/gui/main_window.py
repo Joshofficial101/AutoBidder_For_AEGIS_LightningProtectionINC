@@ -269,19 +269,19 @@ class LightningBidApp:
         self.parse_pdf_btn = ft.ElevatedButton(
             "🔍 Parse PDF",
             on_click=self._parse_pdf,
-            disabled=True
+            disabled=False  # Enable by default - will check if file exists in handler
         )
         
         self.load_excel_btn = ft.ElevatedButton(
             "📥 Load Excel",
             on_click=self._load_excel,
-            disabled=True
+            disabled=False  # Enable by default - will check if file exists in handler
         )
         
         self.calculate_btn = ft.ElevatedButton(
             "💰 Calculate Bid",
             on_click=self._calculate_bid,
-            disabled=True,
+            disabled=True,  # Keep disabled until Excel is loaded
             color=ft.Colors.WHITE,
             bgcolor=ft.Colors.GREEN_700
         )
@@ -354,21 +354,29 @@ class LightningBidApp:
     # Event handlers
     def _on_excel_selected(self, e: ft.FilePickerResultEvent):
         """Handle Excel file selection."""
-        if e.files and len(e.files) > 0:
-            self.excel_file_path = Path(e.files[0].path)
-            self.excel_file_text.value = f"Selected: {e.files[0].name}"
-            self.excel_file_text.color = ft.Colors.GREEN
-            self.load_excel_btn.disabled = False
-            self.page.update()
+        try:
+            if e.files and len(e.files) > 0:
+                file_path = e.files[0].path
+                self.excel_file_path = Path(file_path)
+                self.excel_file_text.value = f"Selected: {e.files[0].name}"
+                self.excel_file_text.color = ft.Colors.GREEN
+                self.load_excel_btn.disabled = False
+                self.page.update()
+        except Exception as ex:
+            self._show_snackbar(f"Error selecting file: {str(ex)}", ft.Colors.RED)
     
     def _on_pdf_selected(self, e: ft.FilePickerResultEvent):
         """Handle PDF file selection."""
-        if e.files and len(e.files) > 0:
-            self.pdf_file_path = Path(e.files[0].path)
-            self.pdf_file_text.value = f"Selected: {e.files[0].name}"
-            self.pdf_file_text.color = ft.Colors.GREEN
-            self.parse_pdf_btn.disabled = False
-            self.page.update()
+        try:
+            if e.files and len(e.files) > 0:
+                file_path = e.files[0].path
+                self.pdf_file_path = Path(file_path)
+                self.pdf_file_text.value = f"Selected: {e.files[0].name}"
+                self.pdf_file_text.color = ft.Colors.GREEN
+                self.parse_pdf_btn.disabled = False
+                self.page.update()
+        except Exception as ex:
+            self._show_snackbar(f"Error selecting file: {str(ex)}", ft.Colors.RED)
     
     def _on_project_field_change(self, e):
         """Handle project field changes."""
@@ -405,13 +413,15 @@ class LightningBidApp:
     
     def _parse_pdf(self, e):
         """Parse PDF and extract project data."""
-        if not self.pdf_file_path:
+        if not self.pdf_file_path or not self.pdf_file_path.exists():
             self._show_snackbar("Please select a PDF file first", ft.Colors.RED)
             return
         
         try:
             self.page.splash = ft.ProgressBar()
             self.page.update()
+            
+            print(f"DEBUG: Parsing PDF at {self.pdf_file_path}")  # Debug output
             
             # Extract data from PDF
             extracted_data = extract_project_data(self.pdf_file_path)
@@ -465,7 +475,7 @@ class LightningBidApp:
     
     def _load_excel(self, e):
         """Load Excel pricing file."""
-        if not self.excel_file_path:
+        if not self.excel_file_path or not self.excel_file_path.exists():
             self._show_snackbar("Please select an Excel file first", ft.Colors.RED)
             return
         
@@ -473,8 +483,12 @@ class LightningBidApp:
             self.page.splash = ft.ProgressBar()
             self.page.update()
             
+            print(f"DEBUG: Loading Excel at {self.excel_file_path}")  # Debug output
+            
             # Load pricing from Excel
             self.price_catalog = load_pricing_from_excel(self.excel_file_path)
+            
+            print(f"DEBUG: Loaded {len(self.price_catalog)} items")  # Debug output
             
             self.page.splash = None
             self._show_snackbar(
@@ -498,6 +512,8 @@ class LightningBidApp:
         if not self.price_catalog:
             self._show_snackbar("Please load Excel pricing file first", ft.Colors.RED)
             return
+        
+        print(f"DEBUG: Calculating bid with {len(self.price_catalog)} items")  # Debug output
         
         # Validate required fields
         if not self.project_data.get("project_name"):
