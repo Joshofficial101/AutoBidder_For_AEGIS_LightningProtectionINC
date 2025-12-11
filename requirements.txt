@@ -15,7 +15,7 @@ pdfplumber>=0.10.0
 reportlab>=4.0.0
 
 # GUI framework
-flet>=0.21.0
+flet>=0.28.2
 
 # Optional: for future GUI development
 # tkinter (comes with Python, no install needed)
