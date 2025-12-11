@@ -13,7 +13,7 @@ For demo purposes, we'll use sample project data.
 
 from pathlib import Path
 from src.adapters.excel_loader import load_pricing_from_excel
-from src.adapters.pdf_loader import extract_spec_terms
+from src.adapters.pdf_loader import extract_spec_terms, extract_project_data
 from src.calculator.bid_calc import BidCalculator
 from src.exporters.excel_export import ExcelBidExporter
 from src.exporters.pdf_export import PDFSubmittalExporter
@@ -83,37 +83,112 @@ def main():
         ]
         print(f"  [OK] Loaded {len(price_catalog)} demo pricing items")
 
-    # Step 2: Parse spec PDF (optional - we'll use sample data for demo)
+    # Step 2: Parse spec PDF and extract project data
     print("\nStep 2: Parsing Project Specifications...")
     pdf_path = find_first(["*.pdf"])
 
-    if pdf_path:
-        spec_terms = extract_spec_terms(pdf_path)
-        print(f"  [OK] Scanned {pdf_path.name}")
-        print(f"  Found references: {', '.join(list(spec_terms.keys())[:5])}...")
-    else:
-        print("  [INFO] No PDF found - using sample project data")
-
-    # Step 3: Define project (in real use, this comes from PDF + user input)
-    print("\nStep 3: Setting Up Project...")
-
+    # Initialize project data with defaults
     project_data = {
-        "project_name": "Sample Office Building - Lightning Protection",
-        "building_height_ft": 35.0,
-        "roof_area_sqft": 5000.0,
+        "project_name": "Lightning Protection Project",
+        "building_height_ft": None,
+        "roof_area_sqft": None,
         "num_corners": 4,
-        "perimeter_ft": 280.0,
+        "perimeter_ft": None,
         "num_downleads": 2,
         "soil_type": "normal",
         "has_metal_roof": False,
         "preferred_material": "copper"
     }
+    
+    # Default compliance code (will be overridden if found in PDF)
+    compliance_code = "UL 96A"
 
-    print(f"  Project: {project_data['project_name']}")
+    if pdf_path:
+        try:
+            print(f"  [OK] Scanning {pdf_path.name}...")
+            extracted_data = extract_project_data(pdf_path)
+            
+            # Extract project info
+            if extracted_data["project_info"]["project_name"]:
+                project_data["project_name"] = extracted_data["project_info"]["project_name"]
+            
+            # Extract dimensions
+            dims = extracted_data["building_dimensions"]
+            if dims["height"]:
+                project_data["building_height_ft"] = dims["height"]
+            if dims["area"]:
+                project_data["roof_area_sqft"] = dims["area"]
+            if dims["perimeter"]:
+                project_data["perimeter_ft"] = dims["perimeter"]
+            
+            # Extract material preferences
+            mat_prefs = extracted_data["material_preferences"]
+            if mat_prefs["preferred_material"]:
+                project_data["preferred_material"] = mat_prefs["preferred_material"]
+            if mat_prefs["has_metal_roof"]:
+                project_data["has_metal_roof"] = True
+            
+            # Extract other info
+            project_data["num_corners"] = extracted_data.get("num_corners", 4)
+            project_data["soil_type"] = extracted_data.get("soil_type", "normal")
+            
+            # Use extracted compliance standard if found
+            compliance_code = extracted_data.get("compliance_standard") or "UL 96A"
+            
+            print(f"  [OK] Extracted project data:")
+            if project_data["project_name"]:
+                print(f"    Project: {project_data['project_name']}")
+            if dims["height"]:
+                print(f"    Height: {dims['height']} ft")
+            if dims["area"]:
+                print(f"    Roof Area: {dims['area']} sqft")
+            if dims["perimeter"]:
+                print(f"    Perimeter: {dims['perimeter']} ft")
+            if mat_prefs["preferred_material"]:
+                print(f"    Material: {mat_prefs['preferred_material']}")
+            if extracted_data.get("compliance_standard"):
+                print(f"    Compliance: {extracted_data['compliance_standard']}")
+            
+            # Show what's missing
+            missing = []
+            if not dims["height"]:
+                missing.append("height")
+            if not dims["area"]:
+                missing.append("roof area")
+            if missing:
+                print(f"  [INFO] Could not extract: {', '.join(missing)} - using defaults")
+        except Exception as e:
+            print(f"  [WARNING] Error parsing PDF: {str(e)[:100]}")
+            print("  [INFO] Using sample project data")
+            compliance_code = "UL 96A"
+    else:
+        print("  [INFO] No PDF found - using sample project data")
+        compliance_code = "UL 96A"
+
+    # Step 3: Fill in missing project data with defaults
+    print("\nStep 3: Setting Up Project...")
+    
+    # Use defaults for missing critical data
+    if not project_data["building_height_ft"]:
+        project_data["building_height_ft"] = 35.0
+        print("  [INFO] Using default height: 35 ft")
+    
+    if not project_data["roof_area_sqft"]:
+        project_data["roof_area_sqft"] = 5000.0
+        print("  [INFO] Using default roof area: 5000 sqft")
+    
+    if not project_data["perimeter_ft"]:
+        # Estimate perimeter from area (assuming square building)
+        import math
+        side_length = math.sqrt(project_data["roof_area_sqft"])
+        project_data["perimeter_ft"] = side_length * 4
+        print(f"  [INFO] Estimated perimeter: {project_data['perimeter_ft']:.1f} ft")
+
+    print(f"  Final Project: {project_data['project_name']}")
     print(f"  Building: {project_data['building_height_ft']} ft tall, {project_data['roof_area_sqft']} sqft roof")
 
-    # Step 4: Calculate bid using selected compliance code
-    compliance_code = "UL 96A"  # Could be "NFPA 780" instead
+    # Step 4: Calculate bid using extracted or default compliance code
+    # compliance_code is set above from PDF extraction or defaults to "UL 96A"
     print(f"\nStep 4: Calculating Bid (using {compliance_code})...")
 
     calculator = BidCalculator(price_catalog, compliance_code=compliance_code)
