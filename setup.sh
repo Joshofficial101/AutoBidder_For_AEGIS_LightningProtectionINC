@@ -17,7 +17,7 @@ echo "--- 3. Making run_gui.sh executable ---"
 chmod +x run_gui.sh
 
 echo "===================================="
-echo "✅ SETUP COMPLETE!"
+echo "SETUP COMPLETE!"
 echo "Run the application next time with: ./run_gui.sh"
 echo "===================================="
 
