@@ -80,6 +80,8 @@ class LightningBidApp:
         # Add file pickers to overlay (must be done after page is ready)
         self.page.overlay.append(self.excel_file_picker)
         self.page.overlay.append(self.pdf_file_picker)
+        self.page.overlay.append(self.excel_save_picker)
+        self.page.overlay.append(self.pdf_save_picker)
         
         # Layout
         self.page.add(
@@ -111,9 +113,19 @@ class LightningBidApp:
     
     def _build_file_section(self) -> ft.Container:
         """Build file selection section."""
-        # Excel file picker
+        # Excel file picker (for input)
         self.excel_file_picker = ft.FilePicker(
             on_result=self._on_excel_selected
+        )
+        
+        # Excel save picker (for export)
+        self.excel_save_picker = ft.FilePicker(
+            on_result=self._on_excel_save_selected
+        )
+        
+        # PDF save picker (for export)
+        self.pdf_save_picker = ft.FilePicker(
+            on_result=self._on_pdf_save_selected
         )
         
         self.excel_file_text = ft.Text(
@@ -130,7 +142,7 @@ class LightningBidApp:
             )
         )
         
-        # PDF file picker
+        # PDF file picker (for input)
         self.pdf_file_picker = ft.FilePicker(
             on_result=self._on_pdf_selected
         )
@@ -615,38 +627,80 @@ class LightningBidApp:
         self.page.update()  # Make sure to update the page after changing display
     
     def _export_excel(self, e):
-        """Export bid to Excel."""
+        """Export bid to Excel - opens save dialog."""
         if not self.current_bid:
+            self._show_snackbar("Please calculate a bid first", ft.Colors.RED)
             return
         
-        try:
-            excel_exporter = ExcelBidExporter()
-            excel_output = self.output_dir / f"bid_{self.current_bid.project_name.replace(' ', '_')}.xlsx"
-            excel_exporter.export_bid(self.current_bid, excel_output)
-            self._show_snackbar(f"Excel exported to: {excel_output.name}", ft.Colors.GREEN)
-        except Exception as ex:
-            self._show_snackbar(f"Error exporting Excel: {str(ex)[:100]}", ft.Colors.RED)
+        # Generate default filename
+        safe_name = "".join(c for c in self.current_bid.project_name if c.isalnum() or c in (' ', '-', '_')).strip()
+        safe_name = safe_name.replace(' ', '_')
+        default_filename = f"bid_{safe_name}.xlsx"
+        
+        # Open save dialog
+        self.excel_save_picker.save_file(
+            dialog_title="Save Excel Bid Sheet",
+            file_name=default_filename,
+            allowed_extensions=["xlsx"]
+        )
+    
+    def _on_excel_save_selected(self, e: ft.FilePickerResultEvent):
+        """Handle Excel save file selection."""
+        if e.path:
+            try:
+                excel_exporter = ExcelBidExporter()
+                excel_output = Path(e.path)
+                excel_exporter.export_bid(self.current_bid, excel_output)
+                self._show_snackbar(f"Excel saved to: {excel_output.name}", ft.Colors.GREEN)
+            except Exception as ex:
+                import traceback
+                print(f"DEBUG ERROR exporting Excel: {str(ex)}")
+                print(traceback.format_exc())
+                self._show_snackbar(f"Error exporting Excel: {str(ex)[:100]}", ft.Colors.RED)
+        elif e.path == "":  # User cancelled
+            pass  # User cancelled, do nothing
     
     def _export_pdf(self, e):
-        """Export bid to PDF."""
+        """Export bid to PDF - opens save dialog."""
         if not self.current_bid:
+            self._show_snackbar("Please calculate a bid first", ft.Colors.RED)
             return
         
-        try:
-            pdf_exporter = PDFSubmittalExporter(
-                contractor_name="ABC Lightning Protection Co.",
-                contractor_info={
-                    "address": "123 Main St, Your City, ST 12345",
-                    "phone": "(555) 123-4567",
-                    "email": "info@abclightning.com",
-                    "license": "LP-12345"
-                }
-            )
-            pdf_output = self.output_dir / f"submittal_{self.current_bid.project_name.replace(' ', '_')}.pdf"
-            pdf_exporter.export_submittal(self.current_bid, pdf_output, self.compliance_code)
-            self._show_snackbar(f"PDF exported to: {pdf_output.name}", ft.Colors.GREEN)
-        except Exception as ex:
-            self._show_snackbar(f"Error exporting PDF: {str(ex)[:100]}", ft.Colors.RED)
+        # Generate default filename
+        safe_name = "".join(c for c in self.current_bid.project_name if c.isalnum() or c in (' ', '-', '_')).strip()
+        safe_name = safe_name.replace(' ', '_')
+        default_filename = f"submittal_{safe_name}.pdf"
+        
+        # Open save dialog
+        self.pdf_save_picker.save_file(
+            dialog_title="Save PDF Submittal",
+            file_name=default_filename,
+            allowed_extensions=["pdf"]
+        )
+    
+    def _on_pdf_save_selected(self, e: ft.FilePickerResultEvent):
+        """Handle PDF save file selection."""
+        if e.path:
+            try:
+                pdf_exporter = PDFSubmittalExporter(
+                    contractor_name="ABC Lightning Protection Co.",
+                    contractor_info={
+                        "address": "123 Main St, Your City, ST 12345",
+                        "phone": "(555) 123-4567",
+                        "email": "info@abclightning.com",
+                        "license": "LP-12345"
+                    }
+                )
+                pdf_output = Path(e.path)
+                pdf_exporter.export_submittal(self.current_bid, pdf_output, self.compliance_code)
+                self._show_snackbar(f"PDF saved to: {pdf_output.name}", ft.Colors.GREEN)
+            except Exception as ex:
+                import traceback
+                print(f"DEBUG ERROR exporting PDF: {str(ex)}")
+                print(traceback.format_exc())
+                self._show_snackbar(f"Error exporting PDF: {str(ex)[:100]}", ft.Colors.RED)
+        elif e.path == "":  # User cancelled
+            pass  # User cancelled, do nothing
     
     def _show_snackbar(self, message: str, color):
         """Show a snackbar notification."""
