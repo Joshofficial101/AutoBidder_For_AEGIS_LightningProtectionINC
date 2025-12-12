@@ -25,6 +25,7 @@ from src.calculator.bid_calc import BidCalculator
 from src.exporters.excel_export import ExcelBidExporter
 from src.exporters.pdf_export import PDFSubmittalExporter
 from src.models.items import PriceItem
+from src.validators.js_validator import DimensionValidator
 
 
 class LightningBidApp:
@@ -66,6 +67,13 @@ class LightningBidApp:
         }
         self.compliance_code = "UL 96A"
         
+        # Validation state tracking
+        self.validation_errors = {
+            "height": False,
+            "area": False,
+            "perimeter": False
+        }
+        
         # File paths
         self.excel_file_path: Optional[Path] = None
         self.pdf_file_path: Optional[Path] = None
@@ -85,6 +93,14 @@ class LightningBidApp:
         )
         self.page.overlay.append(self.feedback_dialog)
         # ----------------------------------------------------
+        
+        # --- NEW: Initialize JavaScript Validator ---
+        try:
+            self.dimension_validator = DimensionValidator()
+        except Exception as e:
+            print(f"Warning: Could not initialize dimension validator: {e}")
+            self.dimension_validator = None
+        # --------------------------------------------
 
         self._show_login_screen()
 
@@ -317,13 +333,20 @@ class LightningBidApp:
             on_change=self._on_project_field_change
         )
         
-        # Building dimensions
+        # Building dimensions with validation
         self.height_field = ft.TextField(
             label="Building Height (ft)",
             hint_text="e.g., 35.0",
             value="",
             keyboard_type=ft.KeyboardType.NUMBER,
             on_change=self._on_project_field_change
+        )
+        
+        self.height_error = ft.Text(
+            "",
+            size=12,
+            color=Colors.RED,
+            visible=False
         )
         
         self.area_field = ft.TextField(
@@ -334,12 +357,26 @@ class LightningBidApp:
             on_change=self._on_project_field_change
         )
         
+        self.area_error = ft.Text(
+            "",
+            size=12,
+            color=Colors.RED,
+            visible=False
+        )
+        
         self.perimeter_field = ft.TextField(
             label="Perimeter (ft)",
             hint_text="e.g., 280.0",
             value="",
             keyboard_type=ft.KeyboardType.NUMBER,
             on_change=self._on_project_field_change
+        )
+        
+        self.perimeter_error = ft.Text(
+            "",
+            size=12,
+            color=Colors.RED,
+            visible=False
         )
         
         # Material and compliance
@@ -383,9 +420,18 @@ class LightningBidApp:
                     ft.Text("Project Information", size=18, weight=FontWeight.BOLD),
                     ft.Row([self.project_name_field], expand=True),
                     ft.Row([
-                        self.height_field,
-                        self.area_field,
-                        self.perimeter_field
+                        ft.Column([
+                            self.height_field,
+                            self.height_error
+                        ], spacing=2, expand=True),
+                        ft.Column([
+                            self.area_field,
+                            self.area_error
+                        ], spacing=2, expand=True),
+                        ft.Column([
+                            self.perimeter_field,
+                            self.perimeter_error
+                        ], spacing=2, expand=True)
                     ], expand=True),
                     ft.Row([
                         self.material_dropdown,
@@ -674,32 +720,112 @@ class LightningBidApp:
     # ---------------------------------------------------------------------
     
     def _on_project_field_change(self, e):
-        """Handle project field changes."""
+        """Handle project field changes with real-time validation."""
         # Update project_data dictionary
         if hasattr(e.control, 'value'):
             field_name = e.control.label.lower().replace(" ", "_")
             if "project name" in e.control.label.lower():
                 self.project_data["project_name"] = e.control.value
             elif "height" in e.control.label.lower():
-                try:
-                    self.project_data["building_height_ft"] = float(e.control.value) if e.control.value else None
-                except ValueError:
-                    pass
+                # Real-time validation for height
+                self._validate_dimension_field(
+                    e.control.value,
+                    "height",
+                    self.height_field,
+                    self.height_error,
+                    "building_height_ft"
+                )
             elif "area" in e.control.label.lower():
-                try:
-                    self.project_data["roof_area_sqft"] = float(e.control.value) if e.control.value else None
-                except ValueError:
-                    pass
+                # Real-time validation for area
+                self._validate_dimension_field(
+                    e.control.value,
+                    "area",
+                    self.area_field,
+                    self.area_error,
+                    "roof_area_sqft"
+                )
             elif "perimeter" in e.control.label.lower():
-                try:
-                    self.project_data["perimeter_ft"] = float(e.control.value) if e.control.value else None
-                except ValueError:
-                    pass
+                # Real-time validation for perimeter
+                self._validate_dimension_field(
+                    e.control.value,
+                    "perimeter",
+                    self.perimeter_field,
+                    self.perimeter_error,
+                    "perimeter_ft"
+                )
             elif "corners" in e.control.label.lower():
                 try:
                     self.project_data["num_corners"] = int(e.control.value) if e.control.value else 4
                 except ValueError:
                     pass
+    
+    def _validate_dimension_field(self, value: str, field_type: str, 
+                                   field_control: ft.TextField, 
+                                   error_control: ft.Text,
+                                   data_key: str):
+        """
+        Validate a dimension field using JavaScript validator and update UI.
+        
+        Args:
+            value: The input value to validate
+            field_type: Type of field ("height", "area", "perimeter")
+            field_control: The TextField control to update
+            error_control: The error message Text control
+            data_key: Key in project_data to update
+        """
+        if self.dimension_validator is None:
+            # Fallback if validator not available - just try to parse
+            try:
+                if value:
+                    self.project_data[data_key] = float(value)
+                else:
+                    self.project_data[data_key] = None
+            except ValueError:
+                pass
+            return
+        
+        # Get validation result from JavaScript
+        if field_type == "height":
+            result = self.dimension_validator.validate_height(value)
+        elif field_type == "area":
+            result = self.dimension_validator.validate_area(value)
+        elif field_type == "perimeter":
+            result = self.dimension_validator.validate_perimeter(value)
+        else:
+            return
+        
+        # Update UI based on validation result
+        if result["valid"]:
+            # Valid input - clear error, reset border color
+            field_control.border_color = None
+            error_control.visible = False
+            error_control.value = ""
+            self.validation_errors[field_type] = False
+            
+            # Update project data if value is not empty
+            if value:
+                try:
+                    self.project_data[data_key] = float(value)
+                except ValueError:
+                    self.project_data[data_key] = None
+            else:
+                self.project_data[data_key] = None
+        else:
+            # Invalid input - show error, set red border
+            field_control.border_color = Colors.RED
+            error_control.value = result["error"]
+            error_control.visible = True
+            self.validation_errors[field_type] = True
+            
+            # Don't update project_data for invalid input
+            # Keep previous valid value if any
+        
+        # Update the controls
+        field_control.update()
+        error_control.update()
+        
+        # Update Calculate Bid button state based on validation
+        self._update_calculate_button_state()
     
     def _on_compliance_change(self, e):
         """Handle compliance standard change."""
@@ -729,15 +855,36 @@ class LightningBidApp:
             dims = extracted_data["building_dimensions"]
             if dims["height"]:
                 self.height_field.value = str(dims["height"])
-                self.project_data["building_height_ft"] = dims["height"]
+                # Trigger validation when field is populated from PDF
+                self._validate_dimension_field(
+                    str(dims["height"]),
+                    "height",
+                    self.height_field,
+                    self.height_error,
+                    "building_height_ft"
+                )
             
             if dims["area"]:
                 self.area_field.value = str(dims["area"])
-                self.project_data["roof_area_sqft"] = dims["area"]
+                # Trigger validation when field is populated from PDF
+                self._validate_dimension_field(
+                    str(dims["area"]),
+                    "area",
+                    self.area_field,
+                    self.area_error,
+                    "roof_area_sqft"
+                )
             
             if dims["perimeter"]:
                 self.perimeter_field.value = str(dims["perimeter"])
-                self.project_data["perimeter_ft"] = dims["perimeter"]
+                # Trigger validation when field is populated from PDF
+                self._validate_dimension_field(
+                    str(dims["perimeter"]),
+                    "perimeter",
+                    self.perimeter_field,
+                    self.perimeter_error,
+                    "perimeter_ft"
+                )
             
             # Material preferences
             mat_prefs = extracted_data["material_preferences"]
@@ -791,9 +938,8 @@ class LightningBidApp:
                 Colors.GREEN
             )
             
-            # Enable calculate button if we have pricing
-            if self.price_catalog:
-                self.calculate_btn.disabled = False
+            # Update calculate button state (checks both pricing and validation)
+            self._update_calculate_button_state()
             
             self.page.update()
             
@@ -802,6 +948,16 @@ class LightningBidApp:
             self._show_feedback_dialog(f"Error loading Excel: {str(ex)[:100]}", Colors.RED)
             self.page.update()
     
+    def _update_calculate_button_state(self):
+        """Update the Calculate Bid button state based on validation errors."""
+        if hasattr(self, 'calculate_btn'):
+            # Disable button if any field has validation errors
+            has_errors = any(self.validation_errors.values())
+            # Also check if pricing is loaded
+            has_pricing = len(self.price_catalog) > 0
+            self.calculate_btn.disabled = has_errors or not has_pricing
+            self.calculate_btn.update()
+    
     def _calculate_bid(self, e):
         """Calculate bid based on current project data."""
         if not self.price_catalog:
@@ -809,7 +965,7 @@ class LightningBidApp:
             return
         
         print(f"DEBUG: Calculating bid with {len(self.price_catalog)} items")
-        
+        """Calculate bid based on current project data."""
         # Validate required fields
         if not self.project_data.get("project_name"):
             self.project_data["project_name"] = "Lightning Protection Project"

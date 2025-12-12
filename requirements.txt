@@ -17,6 +17,9 @@ reportlab>=4.0.0
 # GUI framework
 flet>=0.28.2
 
+# JavaScript execution for validation
+PyExecJS>=1.5.1
+
 # Secure Password Hashing
 # bcrypt>=4.1.2
 
