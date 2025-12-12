@@ -188,6 +188,8 @@ class LightningBidApp:
         # Add file pickers to overlay (must be done after page is ready)
         self.page.overlay.append(self.excel_file_picker)
         self.page.overlay.append(self.pdf_file_picker)
+        self.page.overlay.append(self.excel_save_picker)
+        self.page.overlay.append(self.pdf_save_picker)
         
         # Layout
         main_view_content = ft.Container(
@@ -235,9 +237,19 @@ class LightningBidApp:
     
     def _build_file_section(self) -> ft.Container:
         """Build file selection section."""
-        # Excel file picker
+        # Excel file picker (for input)
         self.excel_file_picker = ft.FilePicker(
             on_result=self._on_excel_selected
+        )
+        
+        # Excel save picker (for export)
+        self.excel_save_picker = ft.FilePicker(
+            on_result=self._on_excel_save_selected
+        )
+        
+        # PDF save picker (for export)
+        self.pdf_save_picker = ft.FilePicker(
+            on_result=self._on_pdf_save_selected
         )
         
         self.excel_file_text = ft.Text(
@@ -255,7 +267,7 @@ class LightningBidApp:
             )
         )
         
-        # PDF file picker
+        # PDF file picker (for input)
         self.pdf_file_picker = ft.FilePicker(
             on_result=self._on_pdf_selected
         )
@@ -553,6 +565,7 @@ class LightningBidApp:
             
             # Extract data from PDF
             extracted_data = extract_project_data(self.pdf_file_path)
+            print(f"DEBUG: PDF parsed, extracted data keys: {list(extracted_data.keys())}")  # Debug output
             
             # Update project fields with extracted data
             if extracted_data["project_info"]["project_name"]:
@@ -597,6 +610,10 @@ class LightningBidApp:
             self.page.update()
             
         except Exception as ex:
+            import traceback
+            error_msg = str(ex)
+            print(f"DEBUG ERROR: {error_msg}")  # Debug output
+            print(traceback.format_exc())  # Full traceback
             self.page.splash = None
             self._show_feedback_dialog(f"Error parsing PDF: {str(ex)[:100]}", Colors.RED)
             self.page.update()
@@ -627,10 +644,15 @@ class LightningBidApp:
             # Enable calculate button if we have pricing
             if self.price_catalog:
                 self.calculate_btn.disabled = False
+                print(f"DEBUG: Calculate button enabled")  # Debug output
             
             self.page.update()
             
         except Exception as ex:
+            import traceback
+            error_msg = str(ex)
+            print(f"DEBUG ERROR: {error_msg}")  # Debug output
+            print(traceback.format_exc())  # Full traceback
             self.page.splash = None
             self._show_feedback_dialog(f"Error loading Excel: {str(ex)[:100]}", Colors.RED)
             self.page.update()
@@ -663,9 +685,14 @@ class LightningBidApp:
             self.page.splash = ft.ProgressBar()
             self.page.update()
             
+            print(f"DEBUG: Project data: {self.project_data}")  # Debug output
+            
             # Calculate bid
             calculator = BidCalculator(self.price_catalog, compliance_code=self.compliance_code)
             self.current_bid = calculator.calculate_bid(self.project_data)
+            
+            print(f"DEBUG: Bid calculated, sections: {len(self.current_bid.sections)}")  # Debug output
+            print(f"DEBUG: Final bid amount: ${self.current_bid.final_bid_amount:,.2f}")  # Debug output
             
             # Update display
             self._update_bid_display()
@@ -675,6 +702,10 @@ class LightningBidApp:
             self.page.update()
             
         except Exception as ex:
+            import traceback
+            error_msg = str(ex)
+            print(f"DEBUG ERROR: {error_msg}")  # Debug output
+            print(traceback.format_exc())  # Full traceback
             self.page.splash = None
             self._show_feedback_dialog(f"Error calculating bid: {str(ex)[:100]}", Colors.RED)
             self.page.update()
@@ -682,7 +713,10 @@ class LightningBidApp:
     def _update_bid_display(self):
         """Update the bid display with current bid data."""
         if not self.current_bid:
+            print("DEBUG: No bid to display")
             return
+        
+        print(f"DEBUG: Updating bid display for {self.current_bid.project_name}")  # Debug output
         
         # Update summary text
         self.bid_summary_text.value = (
@@ -713,10 +747,14 @@ class LightningBidApp:
         self.bid_table.visible = True
         self.export_excel_btn.disabled = False
         self.export_pdf_btn.disabled = False
+        
+        print(f"DEBUG: Bid display updated, table visible: {self.bid_table.visible}")  # Debug output
+        self.page.update()  # Make sure to update the page after changing display
     
     def _export_excel(self, e):
-        """Export bid to Excel."""
+        """Export bid to Excel - opens save dialog."""
         if not self.current_bid:
+            self._show_snackbar("Please calculate a bid first", ft.Colors.RED)
             return
         
         try:
@@ -728,8 +766,9 @@ class LightningBidApp:
             self._show_feedback_dialog(f"Error exporting Excel: {str(ex)[:100]}", Colors.RED)
     
     def _export_pdf(self, e):
-        """Export bid to PDF."""
+        """Export bid to PDF - opens save dialog."""
         if not self.current_bid:
+            self._show_snackbar("Please calculate a bid first", ft.Colors.RED)
             return
         
         try:
