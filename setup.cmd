@@ -1,25 +1,34 @@
-#!/bin/bash
+@echo off
+REM --- Windows Setup Script for LightningBid ---
 
-# Exit immediately if a command exits with a non-zero status
-set -e
+echo Checking for Python...
+python --version >nul 2>nul
+if errorlevel 1 (
+    echo.
+    echo ERROR: Python not found. Please install Python 3.9 or newer and ensure it is in your PATH.
+    pause
+    exit /b 1
+)
 
-echo "--- 1. Creating Virtual Environment (.venv) ---"
-# Use python3 on Mac/Linux systems where 'python' might be aliased to Python 2
-python3 -m venv .venv
+echo Creating Python Virtual Environment...
+python -m venv .venv
 
-echo "--- 2. Activating and Installing Dependencies ---"
-# Activate the environment and run the install command
-source .venv/bin/activate
+echo Activating Virtual Environment...
+call .venv\Scripts\activate.bat
+
+echo Installing dependencies from requirements.txt...
 pip install -r requirements.txt
 
-echo "--- 3. Making run_gui.sh executable ---"
-# Ensure the run script has execute permissions
-chmod +x run_gui.sh
+REM Grant execution permission to the run script (not needed for .cmd, but good practice for .ps1 if used)
+REM We will just rely on calling the run script directly.
 
-echo "===================================="
-echo "SETUP COMPLETE!"
-echo "Run the application next time with: ./run_gui.sh"
-echo "===================================="
+echo.
+echo ====================================
+echo SETUP COMPLETE!
+echo Run the application next time with: run_gui.cmd
+echo ====================================
 
-# Deactivate the environment after setup
-deactivate
+REM Deactivate the environment after setup
+call .venv\Scripts\deactivate.bat
+
+pause
