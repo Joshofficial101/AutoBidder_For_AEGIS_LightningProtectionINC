@@ -1,6 +1,6 @@
 README.md: LightningBid - Setup Guide
 
-This guide provides the necessary steps to install dependencies and run the LightningBid application on macOS and Linux systems.
+This guide provides the necessary steps to install dependencies and run the LightningBid application on Windows Systems
 Prerequisites
 
 You must have Python 3.9 or newer and Git installed on your system.
@@ -28,19 +28,15 @@ This method is simpler for users who just need to run the application.
 
 Final Setup Steps (Required for both A and B)
 
-    Grant Execution Permissions: Scripts must be explicitly granted permission to run on macOS/Linux.
-
-    chmod +x setup.sh
-
     Run the Setup Script: This script creates the virtual environment and installs all dependencies.
 
-    ./setup.sh
+    ./setup.cmd
 
 2. Launching the Application
 
 Once the setup is complete, launch the GUI using the simplified script.
 
-./run_gui.sh
+./run_gui.cmd
 
 3. Login Instructions
 
