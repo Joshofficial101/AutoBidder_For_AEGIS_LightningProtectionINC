@@ -3,7 +3,7 @@ README.md: LightningBid - Setup Guide
 This guide provides the necessary steps to install dependencies and run the LightningBid application on Windows Systems
 Prerequisites
 
-You must have Python 3.9 or newer and Git installed on your system.
+You must have Python 3.9 or newer and Git (if cloning) installed on your system.
 1. Project Setup (First Run Only)
 
 You have two options to get the code:
