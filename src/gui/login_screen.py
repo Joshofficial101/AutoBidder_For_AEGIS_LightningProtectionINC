@@ -15,7 +15,8 @@ class LoginScreen(ft.Container):
         # --- Input Fields ---
         self.username_field = ft.TextField(
             label="Username",
-            prefix_icon=ft.icons.PERSON,
+            # FIX: Use string name instead of ft.icons.PERSON
+            prefix_icon=ft.Icon('person'), 
             width=300,
             autofocus=True,
         )
@@ -24,28 +25,30 @@ class LoginScreen(ft.Container):
             label="Password",
             password=True,
             can_reveal_password=True,
-            prefix_icon=ft.icons.LOCK,
+            # FIX: Use string name instead of ft.icons.LOCK
+            prefix_icon=ft.Icon('lock'), 
             width=300,
             on_submit=lambda e: self._handle_submission(),
         )
         
         self.email_field = ft.TextField(
             label="Email",
-            prefix_icon=ft.icons.EMAIL,
+            # FIX: Use string name instead of ft.icons.EMAIL
+            prefix_icon=ft.Icon('email'), 
             width=300,
             visible=False,
         )
         
         # --- Buttons ---
         
-        # FIX 1: Use a regular Column for the button's internal layout
+        # FIX: Define the main button content using string icon names
         self.main_button_content = ft.Row(
-            [ft.Icon(ft.icons.LOGIN), ft.Text("SIGN IN", weight=ft.FontWeight.BOLD)],
+            [ft.Icon('login'), ft.Text("SIGN IN", weight=ft.FontWeight.BOLD)],
             alignment=ft.MainAxisAlignment.CENTER,
             spacing=10
         )
         
-        # FIX 2: Define the main button as a clickable Container (mimics Elevated button)
+        # FIX: Define the main button as a clickable Container (mimics Elevated button)
         self.main_button = ft.Container(
             content=self.main_button_content,
             width=300,
@@ -53,7 +56,6 @@ class LoginScreen(ft.Container):
             border_radius=5,
             bgcolor=ft.colors.BLUE_600,
             on_click=lambda e: self._handle_submission(),
-            # Add subtle elevation/shadow to make it look 'Elevated'
             shadow=ft.BoxShadow(blur_radius=2, color=ft.colors.BLACK26),
             padding=ft.padding.symmetric(horizontal=10),
         )
@@ -98,25 +100,25 @@ class LoginScreen(ft.Container):
         
         # Update UI elements based on the new mode
         if self.is_signup_mode:
-            # Switch to Sign Up View
             self.content.controls[0].value = "Create Account"
             
             text_control.value = "CREATE ACCOUNT"
-            icon_control.name = ft.icons.PERSON_ADD # Change icon
+            # FIX: Use string name instead of ft.icons.PERSON_ADD
+            icon_control.name = 'person_add' 
             
             self.toggle_button.text = "Back to Sign In"
             self.email_field.visible = True
         else:
-            # Switch to Login View
             self.content.controls[0].value = "LightningBid Login"
             
             text_control.value = "SIGN IN"
-            icon_control.name = ft.icons.LOGIN # Change icon
+            # FIX: Use string name instead of ft.icons.LOGIN
+            icon_control.name = 'login' 
             
             self.toggle_button.text = "Create Account"
             self.email_field.visible = False
 
-        # Update all relevant controls
+        # Update controls
         icon_control.update()
         text_control.update()
         self.update()
