@@ -15,7 +15,7 @@ This method automatically sets up version control for pushing changes.
 
     git clone https://github.com/Joshofficial101/AutoBidder_For_AEGIS_LightningProtectionINC.git
     cd AutoBidder_For_AEGIS_LightningProtectionINC
-    git checkout mac_OS_Branch
+    git checkout Windows_Branch
 
 Option B: Download ZIP File
 
