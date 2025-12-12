@@ -21,7 +21,7 @@ flet>=0.28.2
 PyExecJS>=1.5.1
 
 # Secure Password Hashing
-# bcrypt>=4.1.2
+bcrypt>=4.1.2
 
 # Optional: for future GUI development
 # tkinter (comes with Python, no install needed)

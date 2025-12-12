@@ -965,7 +965,7 @@ class LightningBidApp:
             return
         
         print(f"DEBUG: Calculating bid with {len(self.price_catalog)} items")
-        """Calculate bid based on current project data."""
+        
         # Validate required fields
         if not self.project_data.get("project_name"):
             self.project_data["project_name"] = "Lightning Protection Project"
