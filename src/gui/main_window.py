@@ -8,7 +8,7 @@ bidding workflow through a user-friendly graphical interface.
 import flet as ft
 from pathlib import Path
 from typing import Optional, Dict, Any
-# FIX: Explicitly import all constant classes (Colors, FontWeight, etc.)
+# FIX: Explicitly import all constant classes for Windows compatibility
 from flet import Colors, ThemeMode, FontWeight, ScrollMode, MainAxisAlignment, CrossAxisAlignment
 import sys
 
@@ -86,7 +86,7 @@ class LightningBidApp:
 
         self._show_login_screen()
 
-    # --- NEW METHOD: DB INITIALIZATION ---
+    # --- DB INITIALIZATION ---
     def _initialize_db(self) -> Optional[DBConnector]:
         """Initializes and returns the database connector."""
         try:
@@ -94,11 +94,11 @@ class LightningBidApp:
             print("Database connection successful.")
             return connector
         except Exception as e:
-            # FIX: Use imported Colors
+            
             self._show_feedback_dialog(f"Fatal DB Error: {e}", Colors.RED) 
             return None 
 
-    # --- NEW METHOD: SHOW LOGIN SCREEN ---
+    # --- SHOW LOGIN SCREEN ---
     def _show_login_screen(self):
         """Switches the page content to the login view."""
         login_view = create_login_view(
@@ -109,18 +109,18 @@ class LightningBidApp:
         self.page.views.append(login_view)
         self.page.update()
 
-    # --- NEW METHOD: LOGIN HANDLER ---
+    # --- LOGIN HANDLER ---
     def _handle_login_attempt(self, username: str, password: str):
         """
         Handles the sign-in button click by checking credentials against the DB (DEMO MODE).
         """
         if not username or not password:
-            # FIX: Use imported Colors
+            
             self._show_feedback_dialog("Please enter both username and password.", Colors.AMBER_600)
             return
             
         if self.db is None:
-            # FIX: Use imported Colors
+            
             self._show_feedback_dialog("Database connection failed. Cannot log in.", Colors.RED)
             return
 
@@ -134,25 +134,24 @@ class LightningBidApp:
             from src.database.auth_utils import verify_password
             
             if verify_password(password, stored_password):
-                # FIX: Use imported Colors
+                
                 self._show_feedback_dialog(f"Login successful for {stored_username}!", Colors.GREEN_700)
                 self.current_user_id = user_id 
                 self._build_main_ui() 
                 return
 
         # If user not found OR password verification failed:
-        # FIX: Use imported Colors
         self._show_feedback_dialog("Login failed: Invalid username or password.", Colors.RED_700)
 
     def _handle_create_account(self, username: str, password: str, email: str):
         """Handles the user registration process (DEMO MODE)."""
         if not username or not password or not email:
-            # FIX: Use imported Colors
+            
             self._show_feedback_dialog("Please fill out all fields: Username, Password, and Email.", Colors.AMBER_600)
             return
             
         if self.db is None:
-            # FIX: Use imported Colors
+            
             self._show_feedback_dialog("Database connection failed. Cannot create account.", Colors.RED)
             return
 
@@ -164,13 +163,13 @@ class LightningBidApp:
         user_id = self.db.create_user(username, email, hashed_pw)
         
         if user_id:
-            # FIX: Use imported Colors
+            
             self._show_feedback_dialog(f"Account for '{username}' created successfully!", Colors.GREEN_700)
         else:
-            # FIX: Use imported Colors
+            
             self._show_feedback_dialog(f"Account creation failed: Username or Email already exists.", Colors.RED_700)
 
-    # --- MODIFIED/RENAMED METHOD: Original _build_ui is now _build_main_ui ---
+    # --- BUILD MAIN UI ---
     def _build_main_ui(self):
         """Build the main user interface and display it."""
         # File selection section
@@ -188,19 +187,19 @@ class LightningBidApp:
         # Add file pickers to overlay (must be done after page is ready)
         self.page.overlay.append(self.excel_file_picker)
         self.page.overlay.append(self.pdf_file_picker)
+        
+        # The file pickers for saving were introduced in the merged code:
         self.page.overlay.append(self.excel_save_picker)
         self.page.overlay.append(self.pdf_save_picker)
         
         # Layout
-        main_view_content = ft.Container(
+        main_view_content = ft.Container( 
             content=ft.Column(
                 [
                     ft.Text(
                         "LightningBid - Lightning Protection Bidding System",
                         size=24,
-                        # FIX: Use imported FontWeight
                         weight=FontWeight.BOLD,
-                        # FIX: Use imported Colors
                         color=Colors.BLUE_700
                     ),
                     ft.Divider(),
@@ -212,7 +211,6 @@ class LightningBidApp:
                     ft.Divider(),
                     bid_display,
                 ],
-                # FIX: Use imported ScrollMode
                 scroll=ScrollMode.AUTO,
                 spacing=15
             ),
@@ -226,14 +224,13 @@ class LightningBidApp:
             [
                 main_view_content
             ],
-            # FIX: Use imported MainAxisAlignment
             vertical_alignment=MainAxisAlignment.START 
         )
         self.page.views.clear()
         self.page.views.append(main_view)
         self.page.update()
 
-    # The rest of the class methods have their internal constant usages fixed below.
+    # --- UI COMPONENT BUILDERS ---
     
     def _build_file_section(self) -> ft.Container:
         """Build file selection section."""
@@ -255,7 +252,6 @@ class LightningBidApp:
         self.excel_file_text = ft.Text(
             "No Excel file selected",
             size=12,
-            # FIX: Use imported Colors
             color=Colors.GREY
         )
         
@@ -275,7 +271,6 @@ class LightningBidApp:
         self.pdf_file_text = ft.Text(
             "No PDF file selected",
             size=12,
-            # FIX: Use imported Colors
             color=Colors.GREY
         )
         
@@ -302,7 +297,6 @@ class LightningBidApp:
                 spacing=10
             ),
             padding=10,
-            # FIX: Use imported Colors
             bgcolor=Colors.GREY_100,
             border_radius=10
         )
@@ -399,7 +393,6 @@ class LightningBidApp:
                 spacing=10
             ),
             padding=10,
-            # FIX: Use imported Colors
             bgcolor=Colors.GREY_100,
             border_radius=10
         )
@@ -440,6 +433,10 @@ class LightningBidApp:
     
     def _build_bid_display(self) -> ft.Container:
         """Build bid results display section."""
+        
+        # The export buttons must be updated to trigger the save file dialog
+        # The updated handler logic is inside the on_click lambda below.
+        
         self.bid_summary_text = ft.Text(
             "No bid calculated yet. Load files and click 'Calculate Bid'.",
             size=14,
@@ -458,15 +455,23 @@ class LightningBidApp:
             visible=False
         )
         
+        # FIX: Update on_click to trigger the save file dialog
         self.export_excel_btn = ft.ElevatedButton(
             "📊 Export Excel",
-            on_click=self._export_excel,
+            on_click=lambda _: self.excel_save_picker.save_file(
+                allowed_extensions=["xlsx"],
+                file_name=f"bid_{self.current_bid.project_name.replace(' ', '_')}.xlsx" if self.current_bid else "bid_output.xlsx",
+            ),
             disabled=True
         )
         
+        # FIX: Update on_click to trigger the save file dialog
         self.export_pdf_btn = ft.ElevatedButton(
             "📄 Export PDF",
-            on_click=self._export_pdf,
+            on_click=lambda _: self.pdf_save_picker.save_file(
+                allowed_extensions=["pdf"],
+                file_name=f"submittal_{self.current_bid.project_name.replace(' ', '_')}.pdf" if self.current_bid else "submittal_output.pdf",
+            ),
             disabled=True
         )
         
@@ -491,7 +496,9 @@ class LightningBidApp:
             border_radius=10
         )
     
-    # Event handlers
+    # --- EVENT HANDLERS ---
+    
+    # File Input Handlers
     def _on_excel_selected(self, e: ft.FilePickerResultEvent):
         """Handle Excel file selection."""
         try:
@@ -517,6 +524,24 @@ class LightningBidApp:
                 self.page.update()
         except Exception as ex:
             self._show_feedback_dialog(f"Error selecting file: {str(ex)}", Colors.RED)
+
+    # --- FIX: MISSING SAVE HANDLER METHODS (Introduced by the merge) ---
+    def _on_excel_save_selected(self, e: ft.FilePickerResultEvent):
+        """Handler for the Excel save dialog result."""
+        # This resolves the AttributeError seen during the merge.
+        if e.path:
+            self._export_excel(e.path)
+        else:
+            self._show_feedback_dialog("Excel export canceled.", Colors.AMBER_300)
+
+    def _on_pdf_save_selected(self, e: ft.FilePickerResultEvent):
+        """Handler for the PDF save dialog result."""
+        # This resolves the AttributeError seen during the merge.
+        if e.path:
+            self._export_pdf(e.path)
+        else:
+            self._show_feedback_dialog("PDF export canceled.", Colors.AMBER_300)
+    # ---------------------------------------------------------------------
     
     def _on_project_field_change(self, e):
         """Handle project field changes."""
@@ -565,7 +590,6 @@ class LightningBidApp:
             
             # Extract data from PDF
             extracted_data = extract_project_data(self.pdf_file_path)
-            print(f"DEBUG: PDF parsed, extracted data keys: {list(extracted_data.keys())}")  # Debug output
             
             # Update project fields with extracted data
             if extracted_data["project_info"]["project_name"]:
@@ -610,10 +634,6 @@ class LightningBidApp:
             self.page.update()
             
         except Exception as ex:
-            import traceback
-            error_msg = str(ex)
-            print(f"DEBUG ERROR: {error_msg}")  # Debug output
-            print(traceback.format_exc())  # Full traceback
             self.page.splash = None
             self._show_feedback_dialog(f"Error parsing PDF: {str(ex)[:100]}", Colors.RED)
             self.page.update()
@@ -644,15 +664,10 @@ class LightningBidApp:
             # Enable calculate button if we have pricing
             if self.price_catalog:
                 self.calculate_btn.disabled = False
-                print(f"DEBUG: Calculate button enabled")  # Debug output
             
             self.page.update()
             
         except Exception as ex:
-            import traceback
-            error_msg = str(ex)
-            print(f"DEBUG ERROR: {error_msg}")  # Debug output
-            print(traceback.format_exc())  # Full traceback
             self.page.splash = None
             self._show_feedback_dialog(f"Error loading Excel: {str(ex)[:100]}", Colors.RED)
             self.page.update()
@@ -685,14 +700,9 @@ class LightningBidApp:
             self.page.splash = ft.ProgressBar()
             self.page.update()
             
-            print(f"DEBUG: Project data: {self.project_data}")  # Debug output
-            
             # Calculate bid
             calculator = BidCalculator(self.price_catalog, compliance_code=self.compliance_code)
             self.current_bid = calculator.calculate_bid(self.project_data)
-            
-            print(f"DEBUG: Bid calculated, sections: {len(self.current_bid.sections)}")  # Debug output
-            print(f"DEBUG: Final bid amount: ${self.current_bid.final_bid_amount:,.2f}")  # Debug output
             
             # Update display
             self._update_bid_display()
@@ -702,10 +712,6 @@ class LightningBidApp:
             self.page.update()
             
         except Exception as ex:
-            import traceback
-            error_msg = str(ex)
-            print(f"DEBUG ERROR: {error_msg}")  # Debug output
-            print(traceback.format_exc())  # Full traceback
             self.page.splash = None
             self._show_feedback_dialog(f"Error calculating bid: {str(ex)[:100]}", Colors.RED)
             self.page.update()
@@ -713,10 +719,7 @@ class LightningBidApp:
     def _update_bid_display(self):
         """Update the bid display with current bid data."""
         if not self.current_bid:
-            print("DEBUG: No bid to display")
             return
-        
-        print(f"DEBUG: Updating bid display for {self.current_bid.project_name}")  # Debug output
         
         # Update summary text
         self.bid_summary_text.value = (
@@ -747,28 +750,25 @@ class LightningBidApp:
         self.bid_table.visible = True
         self.export_excel_btn.disabled = False
         self.export_pdf_btn.disabled = False
-        
-        print(f"DEBUG: Bid display updated, table visible: {self.bid_table.visible}")  # Debug output
-        self.page.update()  # Make sure to update the page after changing display
+        self.page.update()
     
-    def _export_excel(self, e):
-        """Export bid to Excel - opens save dialog."""
+    # --- MODIFIED EXPORT METHODS (Accepts path from save dialog) ---
+    def _export_excel(self, output_path: str): 
+        """Export bid to Excel using the path selected by the user."""
         if not self.current_bid:
-            self._show_snackbar("Please calculate a bid first", ft.Colors.RED)
             return
         
         try:
             excel_exporter = ExcelBidExporter()
-            excel_output = self.output_dir / f"bid_{self.current_bid.project_name.replace(' ', '_')}.xlsx"
+            excel_output = Path(output_path) # USE the path from the save dialog
             excel_exporter.export_bid(self.current_bid, excel_output)
             self._show_feedback_dialog(f"Excel exported to: {excel_output.name}", Colors.GREEN)
         except Exception as ex:
             self._show_feedback_dialog(f"Error exporting Excel: {str(ex)[:100]}", Colors.RED)
     
-    def _export_pdf(self, e):
-        """Export bid to PDF - opens save dialog."""
+    def _export_pdf(self, output_path: str): 
+        """Export bid to PDF using the path selected by the user."""
         if not self.current_bid:
-            self._show_snackbar("Please calculate a bid first", ft.Colors.RED)
             return
         
         try:
@@ -781,13 +781,13 @@ class LightningBidApp:
                     "license": "LP-12345"
                 }
             )
-            pdf_output = self.output_dir / f"submittal_{self.current_bid.project_name.replace(' ', '_')}.pdf"
+            pdf_output = Path(output_path) # USE the path from the save dialog
             pdf_exporter.export_submittal(self.current_bid, pdf_output, self.compliance_code)
             self._show_feedback_dialog(f"PDF exported to: {pdf_output.name}", Colors.GREEN)
         except Exception as ex:
             self._show_feedback_dialog(f"Error exporting PDF: {str(ex)[:100]}", Colors.RED)
     
-    # --- NEW FEEDBACK METHODS (Replaces _show_snackbar) ---
+    # --- FEEDBACK METHODS ---
     def _close_feedback_dialog(self, e):
         """Closes the generic feedback dialog."""
         self.feedback_dialog.open = False
