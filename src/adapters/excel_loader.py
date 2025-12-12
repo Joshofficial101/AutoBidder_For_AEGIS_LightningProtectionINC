@@ -55,7 +55,7 @@ def _map_columns(df: pd.DataFrame) -> Dict[str, Optional[str]]:
     normalized_cols = {_normalize_column_name(col): col for col in df.columns}
     
     # Code/Part Number
-    code_patterns = ["code", "item code", "part", "part #", "part number", "part no", "sku", "item number"]
+    code_patterns = ["code", "item code", "part", "part #", "part number", "part no", "sku", "item number", "no", "no.", "number", "#"]
     col_map["code"] = next((normalized_cols.get(pat) for pat in code_patterns if pat in normalized_cols), None)
     
     # Name/Description
@@ -197,31 +197,73 @@ def load_pricing_from_excel(path: Path, sheet_name: Optional[str] = None,
             sheets_tried.append(current_sheet or "default")
             
             if df.empty:
+                print(f"DEBUG: Sheet '{current_sheet or 'default'}' is empty")
                 continue
+            
+            print(f"DEBUG: Sheet '{current_sheet or 'default'}' has columns: {list(df.columns)}")
             
             # Map columns
             col_map = _map_columns(df)
+            print(f"DEBUG: Column mapping: {col_map}")
             
-            # Check for required columns
-            missing = [k for k, v in col_map.items() if v is None and k in ("code", "name", "unit_price")]
-            if missing:
-                continue  # Try next sheet
+            # Check for required columns (code is optional if we have name and price)
+            # We need at least: (name OR code) AND unit_price
+            has_name_or_code = col_map["name"] is not None or col_map["code"] is not None
+            has_price = col_map["unit_price"] is not None
+            
+            if not has_price:
+                print(f"DEBUG: Missing price column, trying to find by pattern...")
+                # Try to find price column by looking for numeric columns
+                for col in df.columns:
+                    try:
+                        # Try to parse first few non-empty values as numbers
+                        sample_values = df[col].dropna().head(10)
+                        numeric_count = 0
+                        for val in sample_values:
+                            price = _parse_price(val)
+                            if price is not None and price > 0 and price < 100000:  # Reasonable price range
+                                numeric_count += 1
+                        
+                        if numeric_count >= 3:  # At least 3 valid prices found
+                            col_map["unit_price"] = col
+                            print(f"DEBUG: Found price column by pattern: {col}")
+                            has_price = True
+                            break
+                    except:
+                        pass
+            
+            if not has_name_or_code:
+                print(f"DEBUG: Missing name/code column")
+                continue
+            
+            if not has_price:
+                print(f"DEBUG: Missing price column, trying next sheet")
+                continue
+            
+            print(f"DEBUG: All required columns found! Name: {col_map['name']}, Code: {col_map['code']}, Price: {col_map['unit_price']}")
             
             # Parse rows
             items = []
+            rows_processed = 0
             for _, row in df.iterrows():
+                rows_processed += 1
+                
                 # Skip if all key fields are empty
-                if col_map["code"] and pd.isna(row.get(col_map["code"])):
-                    continue
-                if col_map["name"] and pd.isna(row.get(col_map["name"])):
-                    continue
+                if col_map["code"]:
+                    code_val = row.get(col_map["code"], "")
+                    if pd.isna(code_val) or str(code_val).strip() == "":
+                        continue
+                if col_map["name"]:
+                    name_val = row.get(col_map["name"], "")
+                    if pd.isna(name_val) or str(name_val).strip() == "":
+                        continue
                 
                 # Parse price (required)
                 unit_price = None
                 if col_map["unit_price"]:
                     unit_price = _parse_price(row.get(col_map["unit_price"]))
                 
-                if unit_price is None:
+                if unit_price is None or unit_price <= 0:
                     continue  # Skip rows without valid price
                 
                 # Parse labor rate (optional)
@@ -230,8 +272,21 @@ def load_pricing_from_excel(path: Path, sheet_name: Optional[str] = None,
                     labor_rate = _parse_price(row.get(col_map["labor_rate"]))
                 
                 # Extract other fields
-                code = str(row.get(col_map["code"], "")).strip() if col_map["code"] else ""
-                name = str(row.get(col_map["name"], "")).strip() if col_map["name"] else ""
+                code = ""
+                if col_map["code"]:
+                    code_val = row.get(col_map["code"], "")
+                    if not pd.isna(code_val):
+                        code = str(code_val).strip()
+                
+                name = ""
+                if col_map["name"]:
+                    name_val = row.get(col_map["name"], "")
+                    if not pd.isna(name_val):
+                        name = str(name_val).strip()
+                
+                # If no code but we have name, generate code from row number
+                if not code and name:
+                    code = f"ITEM-{len(items)+1}"
                 
                 if not code and not name:
                     continue  # Skip rows with no identifier
@@ -258,14 +313,20 @@ def load_pricing_from_excel(path: Path, sheet_name: Optional[str] = None,
                     labor_rate=labor_rate
                 ))
             
+            print(f"DEBUG: Processed {rows_processed} rows, found {len(items)} valid items")
+            
             if items:
                 all_items.extend(items)
+                print(f"DEBUG: Successfully loaded {len(items)} items from sheet '{current_sheet or 'default'}'")
                 # If we found items and sheet_name was specified, return immediately
                 if sheet_name:
                     return all_items
         
         except Exception as e:
             # Log error but continue trying other sheets
+            print(f"DEBUG: Error processing sheet '{current_sheet or 'default'}': {str(e)}")
+            import traceback
+            traceback.print_exc()
             continue
     
     if not all_items:
