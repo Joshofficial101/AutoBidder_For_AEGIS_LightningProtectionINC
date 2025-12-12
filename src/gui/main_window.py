@@ -8,13 +8,15 @@ bidding workflow through a user-friendly graphical interface.
 import flet as ft
 from pathlib import Path
 from typing import Optional, Dict, Any
-from src.database.db_connector import DBConnector 
-from src.gui.login_screen import LoginScreen, create_login_view 
+# FIX: Explicitly import all constant classes (Colors, FontWeight, etc.)
+from flet import Colors, ThemeMode, FontWeight, ScrollMode, MainAxisAlignment, CrossAxisAlignment
 import sys
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
+from src.database.db_connector import DBConnector 
+from src.gui.login_screen import LoginScreen, create_login_view 
 from src.adapters.excel_loader import load_pricing_from_excel
 from src.adapters.pdf_loader import extract_project_data
 from src.calculator.bid_calc import BidCalculator
@@ -34,7 +36,8 @@ class LightningBidApp:
         """Initialize the application."""
         self.page = page
         self.page.title = "LightningBid - Lightning Protection Bidding System"
-        self.page.theme_mode = ft.ThemeMode.LIGHT
+        # FIX: Use imported ThemeMode
+        self.page.theme_mode = ThemeMode.LIGHT 
         self.page.window.width = 1200
         self.page.window.height = 800
         self.page.window.min_width = 1000
@@ -75,14 +78,13 @@ class LightningBidApp:
             actions=[
                 ft.TextButton("OK", on_click=self._close_feedback_dialog),
             ],
-            actions_alignment=ft.MainAxisAlignment.END,
+            # FIX: Use imported MainAxisAlignment
+            actions_alignment=MainAxisAlignment.END, 
         )
         self.page.overlay.append(self.feedback_dialog)
         # ----------------------------------------------------
 
-        # Build UI
-        # self._build_ui() # REMOVED: No longer build main UI on start
-        self._show_login_screen() # NEW: Start at the login screen
+        self._show_login_screen()
 
     # --- NEW METHOD: DB INITIALIZATION ---
     def _initialize_db(self) -> Optional[DBConnector]:
@@ -92,14 +94,13 @@ class LightningBidApp:
             print("Database connection successful.")
             return connector
         except Exception as e:
-            # RENAMED from _show_snackbar
-            self._show_feedback_dialog(f"Fatal DB Error: {e}", ft.Colors.RED) 
+            # FIX: Use imported Colors
+            self._show_feedback_dialog(f"Fatal DB Error: {e}", Colors.RED) 
             return None 
 
     # --- NEW METHOD: SHOW LOGIN SCREEN ---
     def _show_login_screen(self):
         """Switches the page content to the login view."""
-        # This calls the function in login_screen.py and passes the handlers
         login_view = create_login_view(
             on_login_submit=self._handle_login_attempt,
             on_create_account_click=self._handle_create_account 
@@ -114,46 +115,45 @@ class LightningBidApp:
         Handles the sign-in button click by checking credentials against the DB (DEMO MODE).
         """
         if not username or not password:
-            # RENAMED from _show_snackbar
-            self._show_feedback_dialog("Please enter both username and password.", ft.colors.AMBER_600)
+            # FIX: Use imported Colors
+            self._show_feedback_dialog("Please enter both username and password.", Colors.AMBER_600)
             return
             
         if self.db is None:
-            # RENAMED from _show_snackbar
-            self._show_feedback_dialog("Database connection failed. Cannot log in.", ft.colors.RED)
+            # FIX: Use imported Colors
+            self._show_feedback_dialog("Database connection failed. Cannot log in.", Colors.RED)
             return
 
         # 1. Fetch user data by username
         user_data = self.db.get_user_by_username(username)
 
         if user_data:
-            # user_data is (user_id, stored_username, stored_password) from DB
             user_id, stored_username, stored_password = user_data 
             
             # 2. DEMO VERIFICATION: Use the DEMO function from auth_utils
             from src.database.auth_utils import verify_password
             
-            if verify_password(password, stored_password): # This now correctly uses the dummy function
-                # RENAMED from _show_snackbar
-                self._show_feedback_dialog(f"Login successful for {stored_username}!", ft.colors.GREEN_700)
+            if verify_password(password, stored_password):
+                # FIX: Use imported Colors
+                self._show_feedback_dialog(f"Login successful for {stored_username}!", Colors.GREEN_700)
                 self.current_user_id = user_id 
                 self._build_main_ui() 
                 return
 
         # If user not found OR password verification failed:
-        # RENAMED from _show_snackbar
-        self._show_feedback_dialog("Login failed: Invalid username or password.", ft.colors.RED_700)
+        # FIX: Use imported Colors
+        self._show_feedback_dialog("Login failed: Invalid username or password.", Colors.RED_700)
 
     def _handle_create_account(self, username: str, password: str, email: str):
         """Handles the user registration process (DEMO MODE)."""
         if not username or not password or not email:
-            # RENAMED from _show_snackbar
-            self._show_feedback_dialog("Please fill out all fields: Username, Password, and Email.", ft.colors.AMBER_600)
+            # FIX: Use imported Colors
+            self._show_feedback_dialog("Please fill out all fields: Username, Password, and Email.", Colors.AMBER_600)
             return
             
         if self.db is None:
-            # RENAMED from _show_snackbar
-            self._show_feedback_dialog("Database connection failed. Cannot create account.", ft.colors.RED)
+            # FIX: Use imported Colors
+            self._show_feedback_dialog("Database connection failed. Cannot create account.", Colors.RED)
             return
 
         # Use the DEMO Hashing function
@@ -164,15 +164,14 @@ class LightningBidApp:
         user_id = self.db.create_user(username, email, hashed_pw)
         
         if user_id:
-            # RENAMED from _show_snackbar
-            self._show_feedback_dialog(f"Account for '{username}' created successfully!", ft.colors.GREEN_700)
-            # Optional: You can automatically log them in here, but for now, we make them click Sign In
+            # FIX: Use imported Colors
+            self._show_feedback_dialog(f"Account for '{username}' created successfully!", Colors.GREEN_700)
         else:
-            # RENAMED from _show_snackbar
-            self._show_feedback_dialog(f"Account creation failed: Username or Email already exists.", ft.colors.RED_700)
+            # FIX: Use imported Colors
+            self._show_feedback_dialog(f"Account creation failed: Username or Email already exists.", Colors.RED_700)
 
     # --- MODIFIED/RENAMED METHOD: Original _build_ui is now _build_main_ui ---
-    def _build_main_ui(self): # RENAMED from _build_ui
+    def _build_main_ui(self):
         """Build the main user interface and display it."""
         # File selection section
         file_section = self._build_file_section()
@@ -191,14 +190,16 @@ class LightningBidApp:
         self.page.overlay.append(self.pdf_file_picker)
         
         # Layout
-        main_view_content = ft.Container( # WRAPPED OLD LAYOUT IN A NEW CONTAINER
+        main_view_content = ft.Container(
             content=ft.Column(
                 [
                     ft.Text(
                         "LightningBid - Lightning Protection Bidding System",
                         size=24,
-                        weight=ft.FontWeight.BOLD,
-                        color=ft.Colors.BLUE_700
+                        # FIX: Use imported FontWeight
+                        weight=FontWeight.BOLD,
+                        # FIX: Use imported Colors
+                        color=Colors.BLUE_700
                     ),
                     ft.Divider(),
                     file_section,
@@ -209,7 +210,8 @@ class LightningBidApp:
                     ft.Divider(),
                     bid_display,
                 ],
-                scroll=ft.ScrollMode.AUTO,
+                # FIX: Use imported ScrollMode
+                scroll=ScrollMode.AUTO,
                 spacing=15
             ),
             padding=20,
@@ -222,14 +224,14 @@ class LightningBidApp:
             [
                 main_view_content
             ],
-            vertical_alignment=ft.MainAxisAlignment.START 
+            # FIX: Use imported MainAxisAlignment
+            vertical_alignment=MainAxisAlignment.START 
         )
         self.page.views.clear()
         self.page.views.append(main_view)
         self.page.update()
 
-    # The rest of the class methods (like _build_file_section, _on_excel_selected, etc.)
-    # remain completely unchanged from your original code below this point.
+    # The rest of the class methods have their internal constant usages fixed below.
     
     def _build_file_section(self) -> ft.Container:
         """Build file selection section."""
@@ -241,7 +243,8 @@ class LightningBidApp:
         self.excel_file_text = ft.Text(
             "No Excel file selected",
             size=12,
-            color=ft.Colors.GREY
+            # FIX: Use imported Colors
+            color=Colors.GREY
         )
         
         excel_btn = ft.ElevatedButton(
@@ -260,7 +263,8 @@ class LightningBidApp:
         self.pdf_file_text = ft.Text(
             "No PDF file selected",
             size=12,
-            color=ft.Colors.GREY
+            # FIX: Use imported Colors
+            color=Colors.GREY
         )
         
         pdf_btn = ft.ElevatedButton(
@@ -274,7 +278,7 @@ class LightningBidApp:
         return ft.Container(
             content=ft.Column(
                 [
-                    ft.Text("File Selection", size=18, weight=ft.FontWeight.BOLD),
+                    ft.Text("File Selection", size=18, weight=FontWeight.BOLD),
                     ft.Row(
                         [
                             ft.Column([excel_btn, self.excel_file_text], tight=True),
@@ -286,7 +290,8 @@ class LightningBidApp:
                 spacing=10
             ),
             padding=10,
-            bgcolor=ft.Colors.GREY_100,
+            # FIX: Use imported Colors
+            bgcolor=Colors.GREY_100,
             border_radius=10
         )
     
@@ -363,7 +368,7 @@ class LightningBidApp:
         return ft.Container(
             content=ft.Column(
                 [
-                    ft.Text("Project Information", size=18, weight=ft.FontWeight.BOLD),
+                    ft.Text("Project Information", size=18, weight=FontWeight.BOLD),
                     ft.Row([self.project_name_field], expand=True),
                     ft.Row([
                         self.height_field,
@@ -382,30 +387,31 @@ class LightningBidApp:
                 spacing=10
             ),
             padding=10,
-            bgcolor=ft.Colors.GREY_100,
+            # FIX: Use imported Colors
+            bgcolor=Colors.GREY_100,
             border_radius=10
         )
     
     def _build_actions_section(self) -> ft.Container:
         """Build action buttons section."""
         self.parse_pdf_btn = ft.ElevatedButton(
-            "🔍 Parse PDF",
+            "📄 Parse PDF",
             on_click=self._parse_pdf,
-            disabled=False  # Enable by default - will check if file exists in handler
+            disabled=False
         )
         
         self.load_excel_btn = ft.ElevatedButton(
             "📥 Load Excel",
             on_click=self._load_excel,
-            disabled=False  # Enable by default - will check if file exists in handler
+            disabled=False
         )
         
         self.calculate_btn = ft.ElevatedButton(
             "💰 Calculate Bid",
             on_click=self._calculate_bid,
-            disabled=True,  # Keep disabled until Excel is loaded
-            color=ft.Colors.WHITE,
-            bgcolor=ft.Colors.GREEN_700
+            disabled=True,
+            color=Colors.WHITE,
+            bgcolor=Colors.GREEN_700
         )
         
         return ft.Container(
@@ -425,7 +431,7 @@ class LightningBidApp:
         self.bid_summary_text = ft.Text(
             "No bid calculated yet. Load files and click 'Calculate Bid'.",
             size=14,
-            color=ft.Colors.GREY
+            color=Colors.GREY
         )
         
         self.bid_table = ft.DataTable(
@@ -461,7 +467,7 @@ class LightningBidApp:
         return ft.Container(
             content=ft.Column(
                 [
-                    ft.Text("Bid Results", size=18, weight=ft.FontWeight.BOLD),
+                    ft.Text("Bid Results", size=18, weight=FontWeight.BOLD),
                     self.bid_summary_text,
                     self.bid_table,
                     export_buttons_row
@@ -469,7 +475,7 @@ class LightningBidApp:
                 spacing=10
             ),
             padding=10,
-            bgcolor=ft.Colors.BLUE_50,
+            bgcolor=Colors.BLUE_50,
             border_radius=10
         )
     
@@ -481,12 +487,11 @@ class LightningBidApp:
                 file_path = e.files[0].path
                 self.excel_file_path = Path(file_path)
                 self.excel_file_text.value = f"Selected: {e.files[0].name}"
-                self.excel_file_text.color = ft.Colors.GREEN
+                self.excel_file_text.color = Colors.GREEN
                 self.load_excel_btn.disabled = False
                 self.page.update()
         except Exception as ex:
-            # RENAMED from _show_snackbar
-            self._show_feedback_dialog(f"Error selecting file: {str(ex)}", ft.Colors.RED)
+            self._show_feedback_dialog(f"Error selecting file: {str(ex)}", Colors.RED)
     
     def _on_pdf_selected(self, e: ft.FilePickerResultEvent):
         """Handle PDF file selection."""
@@ -495,12 +500,11 @@ class LightningBidApp:
                 file_path = e.files[0].path
                 self.pdf_file_path = Path(file_path)
                 self.pdf_file_text.value = f"Selected: {e.files[0].name}"
-                self.pdf_file_text.color = ft.Colors.GREEN
+                self.pdf_file_text.color = Colors.GREEN
                 self.parse_pdf_btn.disabled = False
                 self.page.update()
         except Exception as ex:
-            # RENAMED from _show_snackbar
-            self._show_feedback_dialog(f"Error selecting file: {str(ex)}", ft.Colors.RED)
+            self._show_feedback_dialog(f"Error selecting file: {str(ex)}", Colors.RED)
     
     def _on_project_field_change(self, e):
         """Handle project field changes."""
@@ -538,15 +542,14 @@ class LightningBidApp:
     def _parse_pdf(self, e):
         """Parse PDF and extract project data."""
         if not self.pdf_file_path or not self.pdf_file_path.exists():
-            # RENAMED from _show_snackbar
-            self._show_feedback_dialog("Please select a PDF file first", ft.Colors.RED)
+            self._show_feedback_dialog("Please select a PDF file first", Colors.RED)
             return
         
         try:
             self.page.splash = ft.ProgressBar()
             self.page.update()
             
-            print(f"DEBUG: Parsing PDF at {self.pdf_file_path}")  # Debug output
+            print(f"DEBUG: Parsing PDF at {self.pdf_file_path}")
             
             # Extract data from PDF
             extracted_data = extract_project_data(self.pdf_file_path)
@@ -590,39 +593,35 @@ class LightningBidApp:
                 self.project_data["num_corners"] = extracted_data["num_corners"]
             
             self.page.splash = None
-            # RENAMED from _show_snackbar
-            self._show_feedback_dialog("PDF parsed successfully!", ft.Colors.GREEN)
+            self._show_feedback_dialog("PDF parsed successfully!", Colors.GREEN)
             self.page.update()
             
         except Exception as ex:
             self.page.splash = None
-            # RENAMED from _show_snackbar
-            self._show_feedback_dialog(f"Error parsing PDF: {str(ex)[:100]}", ft.Colors.RED)
+            self._show_feedback_dialog(f"Error parsing PDF: {str(ex)[:100]}", Colors.RED)
             self.page.update()
     
     def _load_excel(self, e):
         """Load Excel pricing file."""
         if not self.excel_file_path or not self.excel_file_path.exists():
-            # RENAMED from _show_snackbar
-            self._show_feedback_dialog("Please select an Excel file first", ft.Colors.RED)
+            self._show_feedback_dialog("Please select an Excel file first", Colors.RED)
             return
         
         try:
             self.page.splash = ft.ProgressBar()
             self.page.update()
             
-            print(f"DEBUG: Loading Excel at {self.excel_file_path}")  # Debug output
+            print(f"DEBUG: Loading Excel at {self.excel_file_path}")
             
             # Load pricing from Excel
             self.price_catalog = load_pricing_from_excel(self.excel_file_path)
             
-            print(f"DEBUG: Loaded {len(self.price_catalog)} items")  # Debug output
+            print(f"DEBUG: Loaded {len(self.price_catalog)} items")
             
             self.page.splash = None
-            # RENAMED from _show_snackbar
             self._show_feedback_dialog(
                 f"Loaded {len(self.price_catalog)} pricing items!",
-                ft.Colors.GREEN
+                Colors.GREEN
             )
             
             # Enable calculate button if we have pricing
@@ -633,18 +632,16 @@ class LightningBidApp:
             
         except Exception as ex:
             self.page.splash = None
-            # RENAMED from _show_snackbar
-            self._show_feedback_dialog(f"Error loading Excel: {str(ex)[:100]}", ft.Colors.RED)
+            self._show_feedback_dialog(f"Error loading Excel: {str(ex)[:100]}", Colors.RED)
             self.page.update()
     
     def _calculate_bid(self, e):
         """Calculate bid based on current project data."""
         if not self.price_catalog:
-            # RENAMED from _show_snackbar
-            self._show_feedback_dialog("Please load Excel pricing file first", ft.Colors.RED)
+            self._show_feedback_dialog("Please load Excel pricing file first", Colors.RED)
             return
         
-        print(f"DEBUG: Calculating bid with {len(self.price_catalog)} items")  # Debug output
+        print(f"DEBUG: Calculating bid with {len(self.price_catalog)} items")
         
         # Validate required fields
         if not self.project_data.get("project_name"):
@@ -674,14 +671,12 @@ class LightningBidApp:
             self._update_bid_display()
             
             self.page.splash = None
-            # RENAMED from _show_snackbar
-            self._show_feedback_dialog("Bid calculated successfully!", ft.Colors.GREEN)
+            self._show_feedback_dialog("Bid calculated successfully!", Colors.GREEN)
             self.page.update()
             
         except Exception as ex:
             self.page.splash = None
-            # RENAMED from _show_snackbar
-            self._show_feedback_dialog(f"Error calculating bid: {str(ex)[:100]}", ft.Colors.RED)
+            self._show_feedback_dialog(f"Error calculating bid: {str(ex)[:100]}", Colors.RED)
             self.page.update()
     
     def _update_bid_display(self):
@@ -696,9 +691,9 @@ class LightningBidApp:
             f"Total with Markup: ${self.current_bid.total_with_markup:,.2f}\n"
             f"FINAL BID AMOUNT: ${self.current_bid.final_bid_amount:,.2f}"
         )
-        self.bid_summary_text.color = ft.Colors.BLACK
+        self.bid_summary_text.color = Colors.BLACK
         self.bid_summary_text.size = 14
-        self.bid_summary_text.weight = ft.FontWeight.BOLD
+        self.bid_summary_text.weight = FontWeight.BOLD
         
         # Update table
         self.bid_table.rows = []
@@ -728,11 +723,9 @@ class LightningBidApp:
             excel_exporter = ExcelBidExporter()
             excel_output = self.output_dir / f"bid_{self.current_bid.project_name.replace(' ', '_')}.xlsx"
             excel_exporter.export_bid(self.current_bid, excel_output)
-            # RENAMED from _show_snackbar
-            self._show_feedback_dialog(f"Excel exported to: {excel_output.name}", ft.Colors.GREEN)
+            self._show_feedback_dialog(f"Excel exported to: {excel_output.name}", Colors.GREEN)
         except Exception as ex:
-            # RENAMED from _show_snackbar
-            self._show_feedback_dialog(f"Error exporting Excel: {str(ex)[:100]}", ft.Colors.RED)
+            self._show_feedback_dialog(f"Error exporting Excel: {str(ex)[:100]}", Colors.RED)
     
     def _export_pdf(self, e):
         """Export bid to PDF."""
@@ -751,11 +744,9 @@ class LightningBidApp:
             )
             pdf_output = self.output_dir / f"submittal_{self.current_bid.project_name.replace(' ', '_')}.pdf"
             pdf_exporter.export_submittal(self.current_bid, pdf_output, self.compliance_code)
-            # RENAMED from _show_snackbar
-            self._show_feedback_dialog(f"PDF exported to: {pdf_output.name}", ft.Colors.GREEN)
+            self._show_feedback_dialog(f"PDF exported to: {pdf_output.name}", Colors.GREEN)
         except Exception as ex:
-            # RENAMED from _show_snackbar
-            self._show_feedback_dialog(f"Error exporting PDF: {str(ex)[:100]}", ft.Colors.RED)
+            self._show_feedback_dialog(f"Error exporting PDF: {str(ex)[:100]}", Colors.RED)
     
     # --- NEW FEEDBACK METHODS (Replaces _show_snackbar) ---
     def _close_feedback_dialog(self, e):

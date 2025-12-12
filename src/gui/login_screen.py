@@ -1,5 +1,7 @@
 import flet as ft
 from typing import Callable, Any
+# FIX: Explicitly import constant classes that were failing in Windows
+from flet import Colors, FontWeight, MainAxisAlignment, BoxShadow, CrossAxisAlignment
 
 class LoginScreen(ft.Container):
     """
@@ -15,7 +17,6 @@ class LoginScreen(ft.Container):
         # --- Input Fields ---
         self.username_field = ft.TextField(
             label="Username",
-            # FIX: Use string name instead of ft.icons.PERSON
             prefix_icon=ft.Icon('person'), 
             width=300,
             autofocus=True,
@@ -25,7 +26,6 @@ class LoginScreen(ft.Container):
             label="Password",
             password=True,
             can_reveal_password=True,
-            # FIX: Use string name instead of ft.icons.LOCK
             prefix_icon=ft.Icon('lock'), 
             width=300,
             on_submit=lambda e: self._handle_submission(),
@@ -33,7 +33,6 @@ class LoginScreen(ft.Container):
         
         self.email_field = ft.TextField(
             label="Email",
-            # FIX: Use string name instead of ft.icons.EMAIL
             prefix_icon=ft.Icon('email'), 
             width=300,
             visible=False,
@@ -41,10 +40,11 @@ class LoginScreen(ft.Container):
         
         # --- Buttons ---
         
-        # FIX: Define the main button content using string icon names
+        # FIX: Use imported FontWeight
         self.main_button_content = ft.Row(
-            [ft.Icon('login'), ft.Text("SIGN IN", weight=ft.FontWeight.BOLD)],
-            alignment=ft.MainAxisAlignment.CENTER,
+            [ft.Icon('login'), ft.Text("SIGN IN", weight=FontWeight.BOLD)],
+            # FIX: Use imported MainAxisAlignment
+            alignment=MainAxisAlignment.CENTER,
             spacing=10
         )
         
@@ -54,9 +54,11 @@ class LoginScreen(ft.Container):
             width=300,
             height=40,
             border_radius=5,
-            bgcolor=ft.colors.BLUE_600,
+            # FIX: Use imported Colors
+            bgcolor=Colors.BLUE_600,
             on_click=lambda e: self._handle_submission(),
-            shadow=ft.BoxShadow(blur_radius=2, color=ft.colors.BLACK26),
+            # FIX: Use imported BoxShadow and Colors
+            shadow=BoxShadow(blur_radius=2, color=Colors.BLACK26),
             padding=ft.padding.symmetric(horizontal=10),
         )
         
@@ -71,11 +73,14 @@ class LoginScreen(ft.Container):
             width=400,
             padding=30,
             border_radius=10,
-            bgcolor=ft.colors.WHITE,
-            shadow=ft.BoxShadow(blur_radius=10, color=ft.colors.BLACK26),
+            # FIX: Use imported Colors
+            bgcolor=Colors.WHITE,
+            # FIX: Use imported BoxShadow and Colors
+            shadow=BoxShadow(blur_radius=10, color=Colors.BLACK26),
             content=ft.Column(
                 [
-                    ft.Text("LightningBid Login", size=24, weight=ft.FontWeight.BOLD, key="title"),
+                    # FIX: Use imported FontWeight
+                    ft.Text("LightningBid Login", size=24, weight=FontWeight.BOLD, key="title"),
                     ft.Divider(),
                     self.username_field,
                     self.password_field,
@@ -84,8 +89,9 @@ class LoginScreen(ft.Container):
                     self.main_button,
                     self.toggle_button,
                 ],
-                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                alignment=ft.MainAxisAlignment.CENTER,
+                # FIX: Use imported CrossAxisAlignment and MainAxisAlignment
+                horizontal_alignment=CrossAxisAlignment.CENTER,
+                alignment=MainAxisAlignment.CENTER,
                 spacing=10
             )
         )
@@ -103,7 +109,6 @@ class LoginScreen(ft.Container):
             self.content.controls[0].value = "Create Account"
             
             text_control.value = "CREATE ACCOUNT"
-            # FIX: Use string name instead of ft.icons.PERSON_ADD
             icon_control.name = 'person_add' 
             
             self.toggle_button.text = "Back to Sign In"
@@ -112,7 +117,6 @@ class LoginScreen(ft.Container):
             self.content.controls[0].value = "LightningBid Login"
             
             text_control.value = "SIGN IN"
-            # FIX: Use string name instead of ft.icons.LOGIN
             icon_control.name = 'login' 
             
             self.toggle_button.text = "Create Account"
@@ -151,6 +155,7 @@ def create_login_view(on_login_submit, on_create_account_click):
                 expand=True
             )
         ],
-        vertical_alignment=ft.MainAxisAlignment.CENTER,
-        horizontal_alignment=ft.CrossAxisAlignment.CENTER
+        # FIX: Use imported MainAxisAlignment and CrossAxisAlignment
+        vertical_alignment=MainAxisAlignment.CENTER,
+        horizontal_alignment=CrossAxisAlignment.CENTER
     )
