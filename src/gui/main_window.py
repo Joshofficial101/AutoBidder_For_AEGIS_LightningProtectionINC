@@ -11,6 +11,8 @@ from typing import Optional, Dict, Any
 # FIX: Explicitly import all constant classes for Windows compatibility
 from flet import Colors, ThemeMode, FontWeight, ScrollMode, MainAxisAlignment, CrossAxisAlignment
 import sys
+import tkinter as tk
+from tkinter import filedialog
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -35,7 +37,7 @@ class LightningBidApp:
     def __init__(self, page: ft.Page):
         """Initialize the application."""
         self.page = page
-        self.page.title = "LightningBid - Lightning Protection Bidding System"
+        self.page.title = "Lightning Protection Bidding System"
         # FIX: Use imported ThemeMode
         self.page.theme_mode = ThemeMode.LIGHT 
         self.page.window.width = 1200
@@ -192,12 +194,16 @@ class LightningBidApp:
         self.page.overlay.append(self.excel_save_picker)
         self.page.overlay.append(self.pdf_save_picker)
         
+        # Debug: Verify file pickers are in overlay
+        print(f"DEBUG: File pickers in overlay: excel_save={self.excel_save_picker in self.page.overlay}, pdf_save={self.pdf_save_picker in self.page.overlay}")
+        self.page.update()
+        
         # Layout
         main_view_content = ft.Container( 
             content=ft.Column(
                 [
                     ft.Text(
-                        "LightningBid - Lightning Protection Bidding System",
+                        "Lightning Protection Bidding System",
                         size=24,
                         weight=FontWeight.BOLD,
                         color=Colors.BLUE_700
@@ -458,20 +464,14 @@ class LightningBidApp:
         # FIX: Update on_click to trigger the save file dialog
         self.export_excel_btn = ft.ElevatedButton(
             "📊 Export Excel",
-            on_click=lambda _: self.excel_save_picker.save_file(
-                allowed_extensions=["xlsx"],
-                file_name=f"bid_{self.current_bid.project_name.replace(' ', '_')}.xlsx" if self.current_bid else "bid_output.xlsx",
-            ),
+            on_click=self._trigger_excel_save_dialog,
             disabled=True
         )
         
         # FIX: Update on_click to trigger the save file dialog
         self.export_pdf_btn = ft.ElevatedButton(
             "📄 Export PDF",
-            on_click=lambda _: self.pdf_save_picker.save_file(
-                allowed_extensions=["pdf"],
-                file_name=f"submittal_{self.current_bid.project_name.replace(' ', '_')}.pdf" if self.current_bid else "submittal_output.pdf",
-            ),
+            on_click=self._trigger_pdf_save_dialog,
             disabled=True
         )
         
@@ -526,6 +526,136 @@ class LightningBidApp:
             self._show_feedback_dialog(f"Error selecting file: {str(ex)}", Colors.RED)
 
     # --- FIX: MISSING SAVE HANDLER METHODS (Introduced by the merge) ---
+    def _trigger_excel_save_dialog(self, e):
+        """Trigger the Excel save file dialog with the current bid's project name."""
+        try:
+            print("DEBUG: Excel save dialog triggered")
+            
+            if self.current_bid:
+                # Clean filename - remove invalid characters
+                clean_name = "".join(c for c in self.current_bid.project_name if c.isalnum() or c in (' ', '-', '_')).strip()
+                clean_name = clean_name.replace(' ', '_')
+                file_name = f"bid_{clean_name}.xlsx"
+            else:
+                file_name = "bid_output.xlsx"
+            
+            # Try Flet's file picker first
+            try:
+                if self.excel_save_picker and self.excel_save_picker in self.page.overlay:
+                    print(f"DEBUG: Trying Flet FilePicker with filename: {file_name}")
+                    self.excel_save_picker.save_file(
+                        allowed_extensions=["xlsx"],
+                        file_name=file_name,
+                        dialog_title="Save Excel Bid File"
+                    )
+                    self.page.update()
+                    print("DEBUG: Flet save_file() called")
+                    # Wait a moment to see if dialog appears
+                    import time
+                    time.sleep(0.1)
+                    return
+            except Exception as flet_ex:
+                print(f"DEBUG: Flet FilePicker failed: {flet_ex}")
+            
+            # Fallback to tkinter file dialog (more reliable on Windows)
+            print("DEBUG: Using tkinter fallback for file save")
+            root = tk.Tk()
+            root.withdraw()  # Hide the main window
+            root.attributes('-topmost', True)  # Bring dialog to front
+            
+            file_path = filedialog.asksaveasfilename(
+                title="Save Excel Bid File",
+                defaultextension=".xlsx",
+                filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")],
+                initialfile=file_name
+            )
+            
+            root.destroy()
+            
+            if file_path:
+                # Ensure the file path has .xlsx extension
+                file_path_obj = Path(file_path)
+                if file_path_obj.suffix.lower() != '.xlsx':
+                    file_path = str(file_path_obj.with_suffix('.xlsx'))
+                    print(f"DEBUG: Added .xlsx extension to path: {file_path}")
+                
+                print(f"DEBUG: User selected path: {file_path}")
+                self._export_excel(file_path)
+            else:
+                print("DEBUG: User canceled file save")
+                self._show_feedback_dialog("Excel export canceled.", Colors.AMBER_300)
+                
+        except Exception as ex:
+            print(f"ERROR in _trigger_excel_save_dialog: {ex}")
+            import traceback
+            traceback.print_exc()
+            self._show_feedback_dialog(f"Error opening save dialog: {str(ex)[:100]}", Colors.RED)
+    
+    def _trigger_pdf_save_dialog(self, e):
+        """Trigger the PDF save file dialog with the current bid's project name."""
+        try:
+            print("DEBUG: PDF save dialog triggered")
+            
+            if self.current_bid:
+                # Clean filename - remove invalid characters
+                clean_name = "".join(c for c in self.current_bid.project_name if c.isalnum() or c in (' ', '-', '_')).strip()
+                clean_name = clean_name.replace(' ', '_')
+                file_name = f"submittal_{clean_name}.pdf"
+            else:
+                file_name = "submittal_output.pdf"
+            
+            # Try Flet's file picker first
+            try:
+                if self.pdf_save_picker and self.pdf_save_picker in self.page.overlay:
+                    print(f"DEBUG: Trying Flet FilePicker with filename: {file_name}")
+                    self.pdf_save_picker.save_file(
+                        allowed_extensions=["pdf"],
+                        file_name=file_name,
+                        dialog_title="Save PDF Submittal File"
+                    )
+                    self.page.update()
+                    print("DEBUG: Flet save_file() called")
+                    # Wait a moment to see if dialog appears
+                    import time
+                    time.sleep(0.1)
+                    return
+            except Exception as flet_ex:
+                print(f"DEBUG: Flet FilePicker failed: {flet_ex}")
+            
+            # Fallback to tkinter file dialog (more reliable on Windows)
+            print("DEBUG: Using tkinter fallback for file save")
+            root = tk.Tk()
+            root.withdraw()  # Hide the main window
+            root.attributes('-topmost', True)  # Bring dialog to front
+            
+            file_path = filedialog.asksaveasfilename(
+                title="Save PDF Submittal File",
+                defaultextension=".pdf",
+                filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")],
+                initialfile=file_name
+            )
+            
+            root.destroy()
+            
+            if file_path:
+                # Ensure the file path has .pdf extension
+                file_path_obj = Path(file_path)
+                if file_path_obj.suffix.lower() != '.pdf':
+                    file_path = str(file_path_obj.with_suffix('.pdf'))
+                    print(f"DEBUG: Added .pdf extension to path: {file_path}")
+                
+                print(f"DEBUG: User selected path: {file_path}")
+                self._export_pdf(file_path)
+            else:
+                print("DEBUG: User canceled file save")
+                self._show_feedback_dialog("PDF export canceled.", Colors.AMBER_300)
+                
+        except Exception as ex:
+            print(f"ERROR in _trigger_pdf_save_dialog: {ex}")
+            import traceback
+            traceback.print_exc()
+            self._show_feedback_dialog(f"Error opening save dialog: {str(ex)[:100]}", Colors.RED)
+    
     def _on_excel_save_selected(self, e: ft.FilePickerResultEvent):
         """Handler for the Excel save dialog result."""
         # This resolves the AttributeError seen during the merge.
@@ -759,11 +889,20 @@ class LightningBidApp:
             return
         
         try:
+            # Ensure the path has .xlsx extension
+            excel_output = Path(output_path)
+            if excel_output.suffix.lower() != '.xlsx':
+                excel_output = excel_output.with_suffix('.xlsx')
+                print(f"DEBUG: Ensuring .xlsx extension: {excel_output}")
+            
             excel_exporter = ExcelBidExporter()
-            excel_output = Path(output_path) # USE the path from the save dialog
             excel_exporter.export_bid(self.current_bid, excel_output)
+            print(f"DEBUG: Excel successfully exported to: {excel_output}")
             self._show_feedback_dialog(f"Excel exported to: {excel_output.name}", Colors.GREEN)
         except Exception as ex:
+            print(f"ERROR exporting Excel: {ex}")
+            import traceback
+            traceback.print_exc()
             self._show_feedback_dialog(f"Error exporting Excel: {str(ex)[:100]}", Colors.RED)
     
     def _export_pdf(self, output_path: str): 
@@ -772,6 +911,12 @@ class LightningBidApp:
             return
         
         try:
+            # Ensure the path has .pdf extension
+            pdf_output = Path(output_path)
+            if pdf_output.suffix.lower() != '.pdf':
+                pdf_output = pdf_output.with_suffix('.pdf')
+                print(f"DEBUG: Ensuring .pdf extension: {pdf_output}")
+            
             pdf_exporter = PDFSubmittalExporter(
                 contractor_name="ABC Lightning Protection Co.",
                 contractor_info={
@@ -781,10 +926,13 @@ class LightningBidApp:
                     "license": "LP-12345"
                 }
             )
-            pdf_output = Path(output_path) # USE the path from the save dialog
             pdf_exporter.export_submittal(self.current_bid, pdf_output, self.compliance_code)
+            print(f"DEBUG: PDF successfully exported to: {pdf_output}")
             self._show_feedback_dialog(f"PDF exported to: {pdf_output.name}", Colors.GREEN)
         except Exception as ex:
+            print(f"ERROR exporting PDF: {ex}")
+            import traceback
+            traceback.print_exc()
             self._show_feedback_dialog(f"Error exporting PDF: {str(ex)[:100]}", Colors.RED)
     
     # --- FEEDBACK METHODS ---

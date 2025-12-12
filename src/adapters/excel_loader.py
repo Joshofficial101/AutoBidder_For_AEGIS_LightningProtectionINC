@@ -248,17 +248,7 @@ def load_pricing_from_excel(path: Path, sheet_name: Optional[str] = None,
             for _, row in df.iterrows():
                 rows_processed += 1
                 
-                # Skip if all key fields are empty
-                if col_map["code"]:
-                    code_val = row.get(col_map["code"], "")
-                    if pd.isna(code_val) or str(code_val).strip() == "":
-                        continue
-                if col_map["name"]:
-                    name_val = row.get(col_map["name"], "")
-                    if pd.isna(name_val) or str(name_val).strip() == "":
-                        continue
-                
-                # Parse price (required)
+                # Parse price first (required) - skip if no valid price
                 unit_price = None
                 if col_map["unit_price"]:
                     unit_price = _parse_price(row.get(col_map["unit_price"]))
@@ -266,12 +256,7 @@ def load_pricing_from_excel(path: Path, sheet_name: Optional[str] = None,
                 if unit_price is None or unit_price <= 0:
                     continue  # Skip rows without valid price
                 
-                # Parse labor rate (optional)
-                labor_rate = None
-                if col_map["labor_rate"]:
-                    labor_rate = _parse_price(row.get(col_map["labor_rate"]))
-                
-                # Extract other fields
+                # Extract code and name fields
                 code = ""
                 if col_map["code"]:
                     code_val = row.get(col_map["code"], "")
@@ -288,8 +273,14 @@ def load_pricing_from_excel(path: Path, sheet_name: Optional[str] = None,
                 if not code and name:
                     code = f"ITEM-{len(items)+1}"
                 
+                # Skip only if BOTH code and name are empty (after code generation attempt)
                 if not code and not name:
                     continue  # Skip rows with no identifier
+                
+                # Parse labor rate (optional)
+                labor_rate = None
+                if col_map["labor_rate"]:
+                    labor_rate = _parse_price(row.get(col_map["labor_rate"]))
                 
                 material_type = None
                 if col_map["material_type"]:

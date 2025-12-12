@@ -104,17 +104,21 @@ def _extract_dimensions(text: str) -> Dict[str, Optional[float]]:
             except (ValueError, IndexError):
                 continue
     
-    # Perimeter patterns
+    # Perimeter patterns - handle various formats including "linear feet"
     perimeter_patterns = [
-        r'perimeter[:\s]+(\d+\.?\d*)\s*(?:ft|feet|\')',
-        r'(\d+\.?\d*)\s*(?:ft|feet|\')\s*perimeter'
+        r'perimeter[:\s]+(?:length[:\s]+)?(\d+[,\d]*\.?\d*)\s*(?:linear\s+)?(?:ft|feet|\')',
+        r'(\d+[,\d]*\.?\d*)\s*(?:linear\s+)?(?:ft|feet|\')\s*(?:perimeter|linear)',
+        r'perimeter[:\s]+(\d+[,\d]*\.?\d*)',
+        r'(\d+[,\d]*\.?\d*)\s*(?:ft|feet|\')\s*perimeter'
     ]
     
     for pattern in perimeter_patterns:
         match = re.search(pattern, text_lower)
         if match:
             try:
-                dims["perimeter"] = float(match.group(1))
+                # Remove commas from the number before converting to float
+                num_str = match.group(1).replace(',', '')
+                dims["perimeter"] = float(num_str)
                 break
             except (ValueError, IndexError):
                 continue
