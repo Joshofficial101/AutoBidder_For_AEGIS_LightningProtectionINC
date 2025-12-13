@@ -14,5 +14,14 @@ pdfplumber>=0.10.0
 # PDF generation (for submittal packages)
 reportlab>=4.0.0
 
+# GUI framework
+flet>=0.28.2
+
+# JavaScript execution for validation
+PyExecJS>=1.5.1
+
+# Secure Password Hashing
+bcrypt>=4.1.2
+
 # Optional: for future GUI development
 # tkinter (comes with Python, no install needed)
