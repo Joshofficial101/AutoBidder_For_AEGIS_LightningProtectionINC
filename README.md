@@ -53,6 +53,7 @@ After loggin in, use the file selection buttons to select the necessary document
 
 We have provided two documents to use in the data -> inputs folder.
 Use the parse PDF function to fill in the boxes, use the load Excel button to pull information from the pricing document, then press calculate bid to see the output.
+
 <img width="617" height="132" alt="Screenshot 2025-12-15 at 5 24 34 PM" src="https://github.com/user-attachments/assets/eca44583-a57d-4e55-b5f0-0de2f2c1fa44" />
 
 After your build sheet is created, you can use the export buttons to save the document as a PDF or Excel to your preferred file loaction.
