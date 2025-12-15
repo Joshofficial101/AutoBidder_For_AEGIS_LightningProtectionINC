@@ -47,11 +47,10 @@ Sign In 	Username, Password 	Success proceeds to the main bidding window. Failur
 
 4. Using the application
 
-After loggin in, use the file selection buttons to select the necessary documents for creating a bid
+After loggin in, use the file selection buttons to select the necessary documents for creating a bid. We have provided two documents to use in the data -> inputs folder.
 
 <img width="462" height="134" alt="Screenshot 2025-12-15 at 5 19 51 PM" src="https://github.com/user-attachments/assets/a2f5a176-1ba7-46ac-8916-922702d1b6e1" />
 
-We have provided two documents to use in the data -> inputs folder.
 Use the parse PDF function to fill in the boxes, use the load Excel button to pull information from the pricing document, then press calculate bid to see the output.
 
 <img width="617" height="132" alt="Screenshot 2025-12-15 at 5 24 34 PM" src="https://github.com/user-attachments/assets/eca44583-a57d-4e55-b5f0-0de2f2c1fa44" />
