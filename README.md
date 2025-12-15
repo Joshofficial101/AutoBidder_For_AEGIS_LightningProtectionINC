@@ -1,3 +1,7 @@
+!!WARNING!!
+This branch is a few updates behind main. One feature missing currently is password hashing. 
+Do NOT use a real password, this version is simply for testing.
+
 README.md: LightningBid - Setup Guide
 
 This guide provides the necessary steps to install dependencies and run the LightningBid application on macOS and Linux systems.
