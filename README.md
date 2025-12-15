@@ -53,3 +53,18 @@ The application will launch on the Login Screen.
 Action 	Required Fields 	Feedback
 Create Account 	Username, Password, Email 	Success/Failure is displayed in a modal dialog window.
 Sign In 	Username, Password 	Success proceeds to the main bidding window. Failure shows an error dialog.
+
+4. Using the application
+
+After logging in, use the file selection buttons to select the necessary documents for creating a bid. We have provided two documents to use in the data -> inputs folder.
+
+<img width="462" height="134" alt="Screenshot 2025-12-15 at 5 19 51 PM" src="https://github.com/user-attachments/assets/a2f5a176-1ba7-46ac-8916-922702d1b6e1" />
+
+Use the parse PDF function to fill in the boxes, use the load Excel button to pull information from the pricing document, then press calculate bid to see the output.
+
+<img width="617" height="132" alt="Screenshot 2025-12-15 at 5 24 34 PM" src="https://github.com/user-attachments/assets/eca44583-a57d-4e55-b5f0-0de2f2c1fa44" />
+
+After your bid sheet is created, you can use the export buttons to save the document as a PDF or Excel to your preferred file loaction.
+
+<img width="1195" height="665" alt="Screenshot 2025-12-15 at 5 28 07 PM" src="https://github.com/user-attachments/assets/eda6e594-f9ca-48bd-816c-653813aeae3c" />
+
