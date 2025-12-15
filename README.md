@@ -47,7 +47,7 @@ Sign In 	Username, Password 	Success proceeds to the main bidding window. Failur
 
 4. Using the application
 
-After loggin in, use the file selection buttons to select the necessary documents for creating a bid. We have provided two documents to use in the data -> inputs folder.
+After logging in, use the file selection buttons to select the necessary documents for creating a bid. We have provided two documents to use in the data -> inputs folder.
 
 <img width="462" height="134" alt="Screenshot 2025-12-15 at 5 19 51 PM" src="https://github.com/user-attachments/assets/a2f5a176-1ba7-46ac-8916-922702d1b6e1" />
 
