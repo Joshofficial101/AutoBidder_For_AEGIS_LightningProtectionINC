@@ -1,5 +1,6 @@
 @echo off
-REM --- Windows Launch Script for LightningBid ---
+REM --- Windows Launch Script for 
+Bid ---
 
 echo Activating Virtual Environment...
 call .venv\Scripts\activate.bat

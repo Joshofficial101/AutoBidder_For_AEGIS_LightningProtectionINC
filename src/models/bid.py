@@ -67,10 +67,17 @@ class Bid(BaseModel):
     sections: List[BidSection] = []
 
     # Markup percentages (configurable)
-    material_markup_pct: float = 15.0  # 15% markup on materials
+    material_markup_pct: float = 0.0   # No markup - LIST PRICE already includes markup
     labor_markup_pct: float = 20.0     # 20% markup on labor
     overhead_pct: float = 10.0         # 10% overhead
     profit_pct: float = 10.0           # 10% profit
+    
+    # Additional flat costs (configurable)
+    commission_amount: float = 0.0     # Commission (flat dollar amount)
+    tools_rental_amount: float = 0.0   # Tools & rental (amount)
+    tools_rental_type: str = "$"       # Tools & rental type: "$" (flat) or "%" (percentage)
+    shipping_amount: float = 0.0       # Shipping cost (flat dollar amount)
+    use_tax_pct: float = 0.0           # Use tax percentage (applied to materials + shipping only)
 
     @property
     def subtotal_material(self) -> float:
@@ -83,21 +90,47 @@ class Bid(BaseModel):
         return sum(section.total_labor for section in self.sections)
 
     @property
+    def material_with_shipping(self) -> float:
+        """Material cost + shipping (before tax)."""
+        return self.subtotal_material + self.shipping_amount
+    
+    @property
+    def material_tax(self) -> float:
+        """Use tax applied to materials + shipping."""
+        return self.material_with_shipping * (self.use_tax_pct / 100)
+    
+    @property
+    def material_total_with_tax(self) -> float:
+        """Material + shipping + tax."""
+        return self.material_with_shipping + self.material_tax
+    
+    @property
     def subtotal(self) -> float:
-        """Total cost before markup."""
-        return self.subtotal_material + self.subtotal_labor
+        """Total cost before markup (includes material + shipping + tax + labor)."""
+        return self.material_total_with_tax + self.subtotal_labor
 
     @property
     def total_with_markup(self) -> float:
-        """Total after applying markup."""
+        """Total after applying markup (material already has tax, only labor gets markup)."""
+        # Material already has shipping and tax applied, no additional markup
         mat_markup = self.subtotal_material * (self.material_markup_pct / 100)
         lab_markup = self.subtotal_labor * (self.labor_markup_pct / 100)
         return self.subtotal + mat_markup + lab_markup
 
     @property
+    def tools_rental_cost(self) -> float:
+        """Calculate tools/rental cost based on type ($ flat or % of subtotal)."""
+        if self.tools_rental_type == "%":
+            return self.subtotal * (self.tools_rental_amount / 100)
+        else:  # "$" flat amount
+            return self.tools_rental_amount
+    
+    @property
     def final_bid_amount(self) -> float:
-        """Final bid amount including overhead and profit."""
-        base = self.total_with_markup
-        overhead = base * (self.overhead_pct / 100)
-        profit = base * (self.profit_pct / 100)
-        return base + overhead + profit
+        """Final bid amount including overhead, profit, and additional costs."""
+        base_with_markup = self.total_with_markup
+        # Apply overhead & profit to ORIGINAL subtotal (which now includes tax), not marked-up amount
+        overhead = self.subtotal * (self.overhead_pct / 100)
+        profit = self.subtotal * (self.profit_pct / 100)
+        # Add flat/percentage additional costs
+        return base_with_markup + overhead + profit + self.commission_amount + self.tools_rental_cost

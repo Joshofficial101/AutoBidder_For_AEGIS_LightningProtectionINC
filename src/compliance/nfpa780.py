@@ -56,17 +56,19 @@ class NFPA780Compliance:
         elif structure_type == "complex":
             max_spacing = 15  # Complex roofs need more coverage
 
+        # Edge terminals (avoid double-counting corners)
         if perimeter_ft:
-            remaining_perimeter = perimeter_ft - (num_corners * 2)
-            edge_terminals = max(0, math.ceil(remaining_perimeter / max_spacing))
+            edge_terminals = max(0, math.ceil(perimeter_ft / max_spacing) - corner_terminals)
         else:
             side_length = math.sqrt(roof_area_sqft)
             perimeter_ft = side_length * 4
-            remaining_perimeter = perimeter_ft - (num_corners * 2)
-            edge_terminals = max(0, math.ceil(remaining_perimeter / max_spacing))
+            edge_terminals = max(0, math.ceil(perimeter_ft / max_spacing) - corner_terminals)
 
-        # Field terminals
-        field_terminals = max(0, math.ceil(roof_area_sqft / 600) - corner_terminals)
+        # Field terminals (only for large roofs)
+        if roof_area_sqft > 10000:
+            field_terminals = max(0, math.ceil((roof_area_sqft - 10000) / 1000))
+        else:
+            field_terminals = 0
 
         total = corner_terminals + edge_terminals + field_terminals
 

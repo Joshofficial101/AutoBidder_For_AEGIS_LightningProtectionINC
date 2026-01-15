@@ -67,6 +67,21 @@ class LightningBidApp:
         }
         self.compliance_code = "UL 96A"
         
+        # Labor settings - worker-based system (each worker has their own hours)
+        self.workers = [
+            {"name": "Worker 1", "wage_per_hour": 25.0, "hours": 40.0}  # Default worker
+        ]
+        
+        # Pricing settings (configurable percentages and additional costs)
+        self.labor_markup_pct = 20.0      # Labor markup percentage
+        self.overhead_pct = 10.0          # Overhead percentage
+        self.profit_pct = 10.0            # Profit percentage
+        self.commission_amount = 0.0      # Commission (flat amount)
+        self.tools_rental_amount = 0.0    # Tools & rental (flat amount or percentage)
+        self.tools_rental_type = "$"      # Tools & rental type: "$" or "%"
+        self.use_tax_pct = 0.0            # Use tax percentage (applied to materials + shipping)
+        self.shipping_amount = 0.0        # Shipping cost (flat amount)
+        
         # Validation state tracking
         self.validation_errors = {
             "height": False,
@@ -390,14 +405,20 @@ class LightningBidApp:
             on_change=self._on_project_field_change
         )
         
-        self.compliance_dropdown = ft.Dropdown(
-            label="Compliance Standard",
-            options=[
-                ft.dropdown.Option("UL 96A", "UL 96A"),
-                ft.dropdown.Option("NFPA 780", "NFPA 780"),
-            ],
-            value="UL 96A",
-            on_change=self._on_compliance_change
+        # Compliance display (read-only - always uses both standards)
+        self.compliance_display = ft.Container(
+            content=ft.Row([
+                ft.Icon(ft.Icons.VERIFIED_USER, color=Colors.GREEN_700, size=20),
+                ft.Text(
+                    "UL 96A + NFPA 780 (Comprehensive)",
+                    size=14,
+                    weight=FontWeight.BOLD,
+                    color=Colors.GREEN_700
+                )
+            ], spacing=8),
+            padding=10,
+            bgcolor=Colors.GREEN_50,
+            border_radius=5
         )
         
         # Options
@@ -435,7 +456,7 @@ class LightningBidApp:
                     ], expand=True),
                     ft.Row([
                         self.material_dropdown,
-                        self.compliance_dropdown
+                        self.compliance_display
                     ], expand=True),
                     ft.Row([
                         self.metal_roof_checkbox,
@@ -471,11 +492,20 @@ class LightningBidApp:
             bgcolor=Colors.GREEN_700
         )
         
+        self.labor_settings_btn = ft.ElevatedButton(
+            "⚙️ Bid Settings",
+            on_click=self._show_labor_settings_dialog,
+            disabled=False,
+            color=Colors.WHITE,
+            bgcolor=Colors.BLUE_700
+        )
+        
         return ft.Container(
-            content=ft.Row(
+            content=            ft.Row(
                 [
                     self.parse_pdf_btn,
                     self.load_excel_btn,
+                    self.labor_settings_btn,
                     self.calculate_btn
                 ],
                 spacing=10
@@ -827,10 +857,7 @@ class LightningBidApp:
         # Update Calculate Bid button state based on validation
         self._update_calculate_button_state()
     
-    def _on_compliance_change(self, e):
-        """Handle compliance standard change."""
-        self.compliance_code = e.control.value
-        self.project_data["compliance_standard"] = e.control.value
+    # Compliance is now always DUAL - no need for change handler
     
     def _parse_pdf(self, e):
         """Parse PDF and extract project data."""
@@ -896,10 +923,8 @@ class LightningBidApp:
                 self.metal_roof_checkbox.value = True
                 self.project_data["has_metal_roof"] = True
             
-            # Compliance standard
-            if extracted_data.get("compliance_standard"):
-                self.compliance_code = extracted_data["compliance_standard"]
-                self.compliance_dropdown.value = extracted_data["compliance_standard"]
+            # Compliance standard (now always using DUAL - UL 96A + NFPA 780)
+            # No need to set since we always use both standards now
             
             # Update corners
             if extracted_data.get("num_corners"):
@@ -958,6 +983,38 @@ class LightningBidApp:
             self.calculate_btn.disabled = has_errors or not has_pricing
             self.calculate_btn.update()
     
+    def _apply_worker_labor_costs(self):
+        """Replace catalog labor with worker-based labor costs."""
+        if not self.current_bid:
+            return
+        
+        # Calculate total project labor cost from workers (each worker has own hours)
+        total_project_labor_cost = sum(
+            worker.get("hours", 0) * worker["wage_per_hour"] 
+            for worker in self.workers
+        )
+        
+        # Distribute labor cost across sections proportionally by material cost
+        if self.current_bid.subtotal_material > 0:
+            for section in self.current_bid.sections:
+                # Each section gets labor proportional to its material cost
+                section_ratio = section.total_material / self.current_bid.subtotal_material
+                section_labor = total_project_labor_cost * section_ratio
+                
+                # Distribute section labor across line items equally
+                if section.line_items:
+                    labor_per_item = section_labor / len(section.line_items)
+                    for line_item in section.line_items:
+                        line_item.labor_cost = labor_per_item
+        else:
+            # Fallback: distribute evenly across all line items
+            total_items = sum(len(s.line_items) for s in self.current_bid.sections)
+            if total_items > 0:
+                labor_per_item = total_project_labor_cost / total_items
+                for section in self.current_bid.sections:
+                    for line_item in section.line_items:
+                        line_item.labor_cost = labor_per_item
+    
     def _calculate_bid(self, e):
         """Calculate bid based on current project data."""
         if not self.price_catalog:
@@ -986,15 +1043,35 @@ class LightningBidApp:
             self.page.splash = ft.ProgressBar()
             self.page.update()
             
-            # Calculate bid
-            calculator = BidCalculator(self.price_catalog, compliance_code=self.compliance_code)
+            # Add pricing settings to project data
+            self.project_data["labor_markup_pct"] = self.labor_markup_pct
+            self.project_data["overhead_pct"] = self.overhead_pct
+            self.project_data["profit_pct"] = self.profit_pct
+            self.project_data["commission_amount"] = self.commission_amount
+            self.project_data["tools_rental_amount"] = self.tools_rental_amount
+            self.project_data["tools_rental_type"] = self.tools_rental_type
+            self.project_data["use_tax_pct"] = self.use_tax_pct
+            self.project_data["shipping_amount"] = self.shipping_amount
+            
+            # Calculate bid using dual compliance (UL 96A + NFPA 780)
+            calculator = BidCalculator(self.price_catalog, compliance_code="DUAL")
             self.current_bid = calculator.calculate_bid(self.project_data)
+            
+            # Apply worker-based labor costs
+            self._apply_worker_labor_costs()
             
             # Update display
             self._update_bid_display()
             
             self.page.splash = None
-            self._show_feedback_dialog("Bid calculated successfully!", Colors.GREEN)
+            
+            # Show success with worker info
+            total_hours = sum(w.get("hours", 0) for w in self.workers)
+            worker_summary = f"{len(self.workers)} worker(s), {total_hours:.1f} total hours"
+            self._show_feedback_dialog(
+                f"Bid calculated successfully!\nCrew: {worker_summary}",
+                Colors.GREEN
+            )
             self.page.update()
             
         except Exception as ex:
@@ -1017,6 +1094,39 @@ class LightningBidApp:
         self.bid_summary_text.color = Colors.BLACK
         self.bid_summary_text.size = 14
         self.bid_summary_text.weight = FontWeight.BOLD
+        
+        # Add cost per square foot reality check
+        if self.project_data.get("roof_area_sqft"):
+            cost_per_sqft = self.current_bid.final_bid_amount / self.project_data["roof_area_sqft"]
+            roof_area = self.project_data["roof_area_sqft"]
+            
+            # Add to summary
+            self.bid_summary_text.value += f"\n\nCost per sqft: ${cost_per_sqft:.2f}"
+            
+            # Scale warning thresholds based on building size
+            # Small buildings have higher $/sqft, large buildings have lower $/sqft
+            if roof_area < 10000:
+                # Small building thresholds
+                low_threshold = 1.50
+                high_threshold = 8.0
+            elif roof_area > 20000:
+                # Large building thresholds (costs don't scale linearly)
+                low_threshold = 0.60
+                high_threshold = 5.0
+            else:
+                # Medium building - scale proportionally
+                # Interpolate between small and large thresholds
+                scale_factor = (roof_area - 10000) / 10000  # 0 to 1
+                low_threshold = 1.50 - (0.90 * scale_factor)  # 1.50 to 0.60
+                high_threshold = 8.0 - (3.0 * scale_factor)  # 8.0 to 5.0
+            
+            # Warn if outside scaled range
+            if cost_per_sqft > high_threshold:
+                self.bid_summary_text.value += f"\n⚠️ WARNING: High cost/sqft (typical for {int(roof_area):,} sqft: ${low_threshold:.2f}-${high_threshold:.2f}/sqft)"
+                self.bid_summary_text.color = Colors.ORANGE
+            elif cost_per_sqft < low_threshold:
+                self.bid_summary_text.value += f"\n⚠️ WARNING: Low cost/sqft - verify quantities (typical: ${low_threshold:.2f}-${high_threshold:.2f}/sqft)"
+                self.bid_summary_text.color = Colors.ORANGE
         
         # Update table
         self.bid_table.rows = []
@@ -1052,7 +1162,7 @@ class LightningBidApp:
                 print(f"DEBUG: Ensuring .xlsx extension: {excel_output}")
             
             excel_exporter = ExcelBidExporter()
-            excel_exporter.export_bid(self.current_bid, excel_output)
+            excel_exporter.export_bid(self.current_bid, excel_output, workers=self.workers)
             print(f"DEBUG: Excel successfully exported to: {excel_output}")
             self._show_feedback_dialog(f"Excel exported to: {excel_output.name}", Colors.GREEN)
         except Exception as ex:
@@ -1082,7 +1192,7 @@ class LightningBidApp:
                     "license": "LP-12345"
                 }
             )
-            pdf_exporter.export_submittal(self.current_bid, pdf_output, self.compliance_code)
+            pdf_exporter.export_submittal(self.current_bid, pdf_output, "UL 96A + NFPA 780")
             print(f"DEBUG: PDF successfully exported to: {pdf_output}")
             self._show_feedback_dialog(f"PDF exported to: {pdf_output.name}", Colors.GREEN)
         except Exception as ex:
@@ -1090,6 +1200,362 @@ class LightningBidApp:
             import traceback
             traceback.print_exc()
             self._show_feedback_dialog(f"Error exporting PDF: {str(ex)[:100]}", Colors.RED)
+    
+    # --- LABOR & CREW SETTINGS DIALOG ---
+    def _show_labor_settings_dialog(self, e):
+        """Show dialog to manage workers, pricing, and bid settings."""
+        
+        # Worker list container that we'll update
+        worker_list_column = ft.Column([], spacing=10)
+        
+        # Pricing fields
+        labor_markup_field = ft.TextField(
+            label="Labor Markup (%)",
+            value=str(self.labor_markup_pct),
+            keyboard_type=ft.KeyboardType.NUMBER,
+            width=140,
+            hint_text="Default: 20%"
+        )
+        
+        overhead_field = ft.TextField(
+            label="Overhead (%)",
+            value=str(self.overhead_pct),
+            keyboard_type=ft.KeyboardType.NUMBER,
+            width=140,
+            hint_text="Default: 10%"
+        )
+        
+        profit_field = ft.TextField(
+            label="Profit (%)",
+            value=str(self.profit_pct),
+            keyboard_type=ft.KeyboardType.NUMBER,
+            width=140,
+            hint_text="Default: 10%"
+        )
+        
+        commission_field = ft.TextField(
+            label="Commission ($)",
+            value=str(self.commission_amount) if self.commission_amount > 0 else "",
+            keyboard_type=ft.KeyboardType.NUMBER,
+            width=140,
+            hint_text="Flat amount"
+        )
+        
+        # Tools & Rental type selector
+        tools_rental_type_dropdown = ft.Dropdown(
+            label="Type",
+            options=[
+                ft.dropdown.Option("$", "$"),
+                ft.dropdown.Option("%", "%"),
+            ],
+            value=self.tools_rental_type,
+            width=80,
+            text_size=14,
+            content_padding=10
+        )
+        
+        tools_rental_field = ft.TextField(
+            label="Tools & Rental",
+            value=str(self.tools_rental_amount) if self.tools_rental_amount > 0 else "",
+            keyboard_type=ft.KeyboardType.NUMBER,
+            width=110,
+            hint_text="Amount"
+        )
+        
+        use_tax_field = ft.TextField(
+            label="Use Tax (%)",
+            value=str(self.use_tax_pct) if self.use_tax_pct > 0 else "",
+            keyboard_type=ft.KeyboardType.NUMBER,
+            width=140,
+            hint_text="Applied to materials + shipping"
+        )
+        
+        shipping_field = ft.TextField(
+            label="Shipping ($)",
+            value=str(self.shipping_amount) if self.shipping_amount > 0 else "",
+            keyboard_type=ft.KeyboardType.NUMBER,
+            width=140,
+            hint_text="Flat amount"
+        )
+        
+        # Container for dialog content
+        dialog_content = ft.Container(
+            content=ft.Column(
+                [
+                    ft.Text(
+                        "Configure your crew, pricing, and bid settings:",
+                        size=14,
+                        color=Colors.GREY_700
+                    ),
+                    ft.Divider(),
+                    
+                    # Workers section
+                    ft.Text("Workers (set hours and wage for each):", weight=FontWeight.BOLD),
+                    worker_list_column,
+                    # Add worker button will be inserted here dynamically
+                    
+                    ft.Divider(),
+                    
+                    # Pricing section
+                    ft.Text("Pricing & Markup:", weight=FontWeight.BOLD, size=14),
+                    ft.Row([
+                        labor_markup_field,
+                        overhead_field,
+                        profit_field
+                    ], spacing=10),
+                    
+                    ft.Text("Material & Shipping:", weight=FontWeight.BOLD, size=14),
+                    ft.Row([
+                        shipping_field,
+                        use_tax_field
+                    ], spacing=10),
+                    
+                    ft.Text("Additional Costs:", weight=FontWeight.BOLD, size=14),
+                    ft.Row([
+                        commission_field,
+                    ], spacing=10),
+                    ft.Row([
+                        tools_rental_field,
+                        tools_rental_type_dropdown
+                    ], spacing=5, alignment=MainAxisAlignment.START),
+                ],
+                spacing=10,
+                scroll=ft.ScrollMode.AUTO,
+                tight=True
+            ),
+            width=600,
+            height=600,
+            padding=20
+        )
+        
+        # Create the dialog first
+        labor_dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Bid Settings", size=20, weight=FontWeight.BOLD),
+            content=dialog_content,
+            actions=[],  # Will be populated later
+            actions_alignment=MainAxisAlignment.END,
+        )
+        
+        def update_worker_list():
+            """Refresh the worker list display."""
+            worker_list_column.controls.clear()
+            
+            for idx, worker in enumerate(self.workers):
+                # Create fields for this worker
+                name_field = ft.TextField(
+                    label=f"Worker {idx + 1} Name",
+                    value=worker["name"],
+                    width=150,
+                    on_change=lambda e, i=idx: self._update_worker_name(i, e.control.value)
+                )
+                
+                hours_field = ft.TextField(
+                    label="Hours",
+                    value=str(worker.get("hours", 40.0)),
+                    keyboard_type=ft.KeyboardType.NUMBER,
+                    width=80,
+                    on_change=lambda e, i=idx: self._update_worker_hours(i, e.control.value)
+                )
+                
+                wage_field = ft.TextField(
+                    label="Wage ($/hr)",
+                    value=str(worker["wage_per_hour"]),
+                    keyboard_type=ft.KeyboardType.NUMBER,
+                    width=100,
+                    on_change=lambda e, i=idx: self._update_worker_wage(i, e.control.value)
+                )
+                
+                # Calculate and display worker total
+                worker_total = worker.get("hours", 40.0) * worker["wage_per_hour"]
+                total_text = ft.Text(
+                    f"${worker_total:,.2f}",
+                    size=12,
+                    weight=FontWeight.BOLD,
+                    color=Colors.GREEN_700,
+                    width=80
+                )
+                
+                remove_btn = ft.IconButton(
+                    icon=ft.Icons.DELETE,
+                    icon_color=Colors.RED,
+                    tooltip="Remove worker",
+                    on_click=lambda e, i=idx: remove_worker(i)
+                )
+                
+                worker_row = ft.Row(
+                    [name_field, hours_field, wage_field, total_text, remove_btn],
+                    spacing=10,
+                    alignment=MainAxisAlignment.START
+                )
+                
+                worker_list_column.controls.append(worker_row)
+        
+        def add_worker(e):
+            """Add a new worker to the list."""
+            worker_num = len(self.workers) + 1
+            self.workers.append({
+                "name": f"Worker {worker_num}",
+                "wage_per_hour": 25.0,
+                "hours": 40.0
+            })
+            update_worker_list()
+            self.page.update()
+        
+        def remove_worker(idx):
+            """Remove a worker from the list."""
+            if len(self.workers) > 1:  # Keep at least one worker
+                self.workers.pop(idx)
+                update_worker_list()
+                self.page.update()
+            else:
+                self._show_feedback_dialog("You must have at least one worker", Colors.AMBER_600)
+        
+        def save_labor_settings(e):
+            """Save the labor and pricing settings and close dialog."""
+            try:
+                # Validate all workers
+                for worker in self.workers:
+                    hours = worker.get("hours", 0)
+                    wage = worker["wage_per_hour"]
+                    
+                    if hours <= 0 or hours > 1000:
+                        self._show_feedback_dialog(
+                            f"{worker['name']}: Hours must be between 0 and 1000",
+                            Colors.RED
+                        )
+                        return
+                    
+                    if wage <= 0 or wage > 500:
+                        self._show_feedback_dialog(
+                            f"{worker['name']}: Wage must be between $0 and $500/hr",
+                            Colors.RED
+                        )
+                        return
+                
+                # Validate and save pricing settings
+                labor_markup = float(labor_markup_field.value) if labor_markup_field.value else 0.0
+                overhead = float(overhead_field.value) if overhead_field.value else 0.0
+                profit = float(profit_field.value) if profit_field.value else 0.0
+                commission = float(commission_field.value) if commission_field.value else 0.0
+                tools_rental = float(tools_rental_field.value) if tools_rental_field.value else 0.0
+                tools_rental_type = tools_rental_type_dropdown.value
+                use_tax = float(use_tax_field.value) if use_tax_field.value else 0.0
+                shipping = float(shipping_field.value) if shipping_field.value else 0.0
+                
+                # Validate percentages (reasonable ranges)
+                if labor_markup < 0 or labor_markup > 100:
+                    self._show_feedback_dialog("Labor markup must be between 0% and 100%", Colors.RED)
+                    return
+                if overhead < 0 or overhead > 100:
+                    self._show_feedback_dialog("Overhead must be between 0% and 100%", Colors.RED)
+                    return
+                if profit < 0 or profit > 100:
+                    self._show_feedback_dialog("Profit must be between 0% and 100%", Colors.RED)
+                    return
+                if use_tax < 0 or use_tax > 100:
+                    self._show_feedback_dialog("Use tax must be between 0% and 100%", Colors.RED)
+                    return
+                if commission < 0:
+                    self._show_feedback_dialog("Commission cannot be negative", Colors.RED)
+                    return
+                if tools_rental < 0:
+                    self._show_feedback_dialog("Tools & rental cannot be negative", Colors.RED)
+                    return
+                if shipping < 0:
+                    self._show_feedback_dialog("Shipping cannot be negative", Colors.RED)
+                    return
+                
+                # Save pricing settings
+                self.labor_markup_pct = labor_markup
+                self.overhead_pct = overhead
+                self.profit_pct = profit
+                self.commission_amount = commission
+                self.tools_rental_amount = tools_rental
+                self.tools_rental_type = tools_rental_type
+                self.use_tax_pct = use_tax
+                self.shipping_amount = shipping
+                
+                # Calculate total labor cost summary
+                total_labor_cost = sum(w.get("hours", 0) * w["wage_per_hour"] for w in self.workers)
+                total_hours = sum(w.get("hours", 0) for w in self.workers)
+                
+                # Close dialog
+                labor_dialog.open = False
+                self.page.update()
+                
+                # Show success message
+                self._show_feedback_dialog(
+                    f"Bid settings saved!\n"
+                    f"Workers: {len(self.workers)} | Hours: {total_hours:.1f} | Labor: ${total_labor_cost:,.2f}\n"
+                    f"Markups: Labor {labor_markup}%, Overhead {overhead}%, Profit {profit}%",
+                    Colors.GREEN
+                )
+                
+                # If bid already calculated, recalculate with new settings
+                if self.current_bid and self.price_catalog:
+                    self._calculate_bid(None)
+                    
+            except ValueError:
+                self._show_feedback_dialog("Please enter valid numbers for all fields", Colors.RED)
+        
+        def cancel_dialog(e):
+            """Close dialog without saving."""
+            # Restore original values if user cancels
+            labor_dialog.open = False
+            self.page.update()
+        
+        # Add worker button
+        add_worker_btn = ft.ElevatedButton(
+            "➕ Add Worker",
+            on_click=add_worker,
+            icon=ft.Icons.PERSON_ADD
+        )
+        
+        # Insert the add_worker button right after worker_list_column (position 3: header text, worker list, button)
+        dialog_content.content.controls.insert(3, add_worker_btn)
+        
+        # Set dialog actions
+        labor_dialog.actions = [
+            ft.TextButton("Cancel", on_click=cancel_dialog),
+            ft.ElevatedButton(
+                "Save Settings",
+                on_click=save_labor_settings,
+                bgcolor=Colors.GREEN_700,
+                color=Colors.WHITE
+            ),
+        ]
+        
+        # Initial worker list population
+        update_worker_list()
+        
+        # Add to overlay and show
+        self.page.overlay.append(labor_dialog)
+        labor_dialog.open = True
+        self.page.update()
+    
+    def _update_worker_name(self, idx: int, name: str):
+        """Update worker name."""
+        if idx < len(self.workers):
+            self.workers[idx]["name"] = name
+    
+    def _update_worker_hours(self, idx: int, hours_str: str):
+        """Update worker hours."""
+        try:
+            hours = float(hours_str)
+            if idx < len(self.workers) and hours > 0:
+                self.workers[idx]["hours"] = hours
+        except ValueError:
+            pass  # Ignore invalid input during typing
+    
+    def _update_worker_wage(self, idx: int, wage_str: str):
+        """Update worker wage."""
+        try:
+            wage = float(wage_str)
+            if idx < len(self.workers) and wage > 0:
+                self.workers[idx]["wage_per_hour"] = wage
+        except ValueError:
+            pass  # Ignore invalid input during typing
     
     # --- FEEDBACK METHODS ---
     def _close_feedback_dialog(self, e):

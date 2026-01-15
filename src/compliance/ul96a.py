@@ -48,21 +48,22 @@ class UL96ACompliance:
         # Step 1: Corners (mandatory)
         corner_terminals = num_corners
 
-        # Step 2: Edge terminals
+        # Step 2: Edge terminals (avoid double-counting corners)
         if perimeter_ft:
-            # Subtract corners, then divide remaining perimeter by max spacing
-            remaining_perimeter = perimeter_ft - (num_corners * 2)  # rough adjustment
-            edge_terminals = max(0, math.ceil(remaining_perimeter / UL96ACompliance.AIR_TERMINAL_MAX_SPACING))
+            # Use 25ft spacing, subtract corners to avoid overlap
+            edge_terminals = max(0, math.ceil(perimeter_ft / 25) - corner_terminals)
         else:
             # Estimate: assume square building
             side_length = math.sqrt(roof_area_sqft)
             perimeter_ft = side_length * 4
-            remaining_perimeter = perimeter_ft - (num_corners * 2)
-            edge_terminals = max(0, math.ceil(remaining_perimeter / UL96ACompliance.AIR_TERMINAL_MAX_SPACING))
+            edge_terminals = max(0, math.ceil(perimeter_ft / 25) - corner_terminals)
 
-        # Step 3: Field terminals (interior of roof)
-        # Rule of thumb: 1 per 500 sqft for flat roofs
-        field_terminals = max(0, math.ceil(roof_area_sqft / 500) - corner_terminals)
+        # Step 3: Field terminals (only for large roofs)
+        # Perimeter coverage is sufficient for roofs under 10,000 sqft
+        if roof_area_sqft > 10000:
+            field_terminals = max(0, math.ceil((roof_area_sqft - 10000) / 1000))
+        else:
+            field_terminals = 0
 
         total = corner_terminals + edge_terminals + field_terminals
 
