@@ -13,6 +13,7 @@ into a shopping list with prices.
 """
 
 from typing import List, Dict, Any, Optional
+import math
 from src.models.items import PriceItem
 from src.models.bid import Bid, BidSection, BidLineItem
 from src.compliance.ul96a import UL96ACompliance
@@ -268,7 +269,7 @@ class BidCalculator:
             section.line_items.append(line_item)
 
         # Add fasteners/supports (every 3 ft)
-        supports_needed = int(total_length / 3)
+        supports_needed = math.ceil(total_length / 3)
         support_item = self.find_item("clamp")
         if not support_item:
             support_item = self.find_item("connector")

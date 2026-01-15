@@ -5,7 +5,7 @@ These classes represent the actual bid - materials needed, costs, and final pric
 Think of this as the "shopping list" with prices attached.
 """
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Optional
 from src.models.items import PriceItem
 
@@ -37,7 +37,7 @@ class BidSection(BaseModel):
     This helps organize the bid into logical groups.
     """
     name: str  # 'Air Terminals', 'Down Conductors', 'Grounding System', etc.
-    line_items: List[BidLineItem] = []
+    line_items: List[BidLineItem] = Field(default_factory=list)
 
     @property
     def total_material(self) -> float:
@@ -64,7 +64,7 @@ class Bid(BaseModel):
     project_name: str
 
     # Organized sections of the bid
-    sections: List[BidSection] = []
+    sections: List[BidSection] = Field(default_factory=list)
 
     # Markup percentages (configurable)
     material_markup_pct: float = 0.0   # No markup - LIST PRICE already includes markup

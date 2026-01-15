@@ -756,6 +756,10 @@ class LightningBidApp:
             field_name = e.control.label.lower().replace(" ", "_")
             if "project name" in e.control.label.lower():
                 self.project_data["project_name"] = e.control.value
+            elif "preferred material" in e.control.label.lower():
+                self.project_data["preferred_material"] = e.control.value
+            elif "metal roof" in e.control.label.lower():
+                self.project_data["has_metal_roof"] = bool(e.control.value)
             elif "height" in e.control.label.lower():
                 # Real-time validation for height
                 self._validate_dimension_field(
@@ -1375,6 +1379,7 @@ class LightningBidApp:
                     color=Colors.GREEN_700,
                     width=80
                 )
+                worker["_total_text"] = total_text
                 
                 remove_btn = ft.IconButton(
                     icon=ft.Icons.DELETE,
@@ -1545,6 +1550,7 @@ class LightningBidApp:
             hours = float(hours_str)
             if idx < len(self.workers) and hours > 0:
                 self.workers[idx]["hours"] = hours
+                self._update_worker_total(idx)
         except ValueError:
             pass  # Ignore invalid input during typing
     
@@ -1554,8 +1560,20 @@ class LightningBidApp:
             wage = float(wage_str)
             if idx < len(self.workers) and wage > 0:
                 self.workers[idx]["wage_per_hour"] = wage
+                self._update_worker_total(idx)
         except ValueError:
             pass  # Ignore invalid input during typing
+
+    def _update_worker_total(self, idx: int):
+        """Update the worker total cost display if present."""
+        if idx >= len(self.workers):
+            return
+        worker = self.workers[idx]
+        total_text = worker.get("_total_text")
+        if total_text:
+            worker_total = worker.get("hours", 0) * worker.get("wage_per_hour", 0)
+            total_text.value = f"${worker_total:,.2f}"
+            total_text.update()
     
     # --- FEEDBACK METHODS ---
     def _close_feedback_dialog(self, e):

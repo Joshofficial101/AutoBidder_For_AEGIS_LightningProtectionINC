@@ -161,11 +161,11 @@ class ExcelBidExporter:
 
         # Totals row
         current_row += 1
-        ws.cell(row=current_row, column=1, value="TOTAL")
+        ws.cell(row=current_row, column=1, value="TOTAL (Material + Labor)")
         ws.cell(row=current_row, column=1).font = Font(bold=True)
         ws.cell(row=current_row, column=2, value=bid.subtotal_material)
         ws.cell(row=current_row, column=3, value=bid.subtotal_labor)
-        ws.cell(row=current_row, column=4, value=bid.subtotal)
+        ws.cell(row=current_row, column=4, value=bid.subtotal_material + bid.subtotal_labor)
 
         for col in [2, 3, 4]:
             cell = ws.cell(row=current_row, column=col)
@@ -289,7 +289,7 @@ class ExcelBidExporter:
             row += 1
 
         row += 1
-        ws.cell(row=row, column=1, value="SUBTOTAL (Material + Labor):")
+        ws.cell(row=row, column=1, value="SUBTOTAL (Material + Labor + Shipping + Tax):")
         ws.cell(row=row, column=2, value=bid.subtotal)
         ws.cell(row=row, column=2).number_format = '$#,##0.00'
         ws.cell(row=row, column=1).font = Font(bold=True, size=12)
