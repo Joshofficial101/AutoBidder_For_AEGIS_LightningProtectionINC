@@ -1,6 +1,7 @@
 import flet as ft
 from pathlib import Path
 from typing import Callable, Any, Optional, List
+import sys
 # FIX: Explicitly import constant classes that were failing in Windows
 from flet import Colors, FontWeight, MainAxisAlignment, BoxShadow, CrossAxisAlignment
 
@@ -122,7 +123,7 @@ class LoginScreen(ft.Container):
 
     def _resolve_logo_path(self) -> Optional[str]:
         """Find a local logo file if present."""
-        root_dir = Path(__file__).resolve().parents[2]
+        root_dir = _get_resource_root()
         candidates = [
             root_dir / "assets" / "company_logo.png",
             root_dir / "assets" / "company_logo.jpg",
@@ -224,7 +225,7 @@ def create_login_view(on_login_submit, on_create_account_click):
     """Creates the centered view containing the LoginScreen."""
     login_screen = LoginScreen(on_login_submit, on_create_account_click)
     
-    root_dir = Path(__file__).resolve().parents[2]
+    root_dir = _get_resource_root()
     background_image = root_dir / "data" / "inputs" / "pexels-andre-ulysses-de-salis-2100065-7843670.jpg"
     background_src = str(background_image) if background_image.exists() else None
     
@@ -276,3 +277,11 @@ def create_login_view(on_login_submit, on_create_account_click):
         padding=0,
         bgcolor=Colors.BLACK
     )
+
+
+def _get_resource_root() -> Path:
+    """Resolve the base path for bundled resources (PyInstaller/cx_Freeze)."""
+    if getattr(sys, "frozen", False):
+        base = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
+        return base if base.exists() else Path(sys.executable).parent
+    return Path(__file__).resolve().parents[2]
