@@ -39,6 +39,111 @@ class DBConnector:
         version INTEGER DEFAULT 1,
         FOREIGN KEY (user_id) REFERENCES Users (user_id)
     );
+    
+    -- MVP data layer tables (multi-user, SaaS-ready schema)
+    CREATE TABLE IF NOT EXISTS Customers (
+        customer_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE(user_id, name),
+        FOREIGN KEY (user_id) REFERENCES Users (user_id)
+    );
+    
+    CREATE TABLE IF NOT EXISTS Projects (
+        project_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        building_height_ft REAL,
+        roof_area_sqft REAL,
+        perimeter_ft REAL,
+        num_corners INTEGER,
+        has_metal_roof INTEGER DEFAULT 0,
+        preferred_material TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(user_id, name),
+        FOREIGN KEY (user_id) REFERENCES Users (user_id)
+    );
+    
+    CREATE TABLE IF NOT EXISTS Bids (
+        bid_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        project_id INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        compliance_code TEXT,
+        subtotal REAL,
+        total_with_markup REAL,
+        final_amount REAL,
+        material_total REAL,
+        labor_total REAL,
+        FOREIGN KEY (user_id) REFERENCES Users (user_id),
+        FOREIGN KEY (project_id) REFERENCES Projects (project_id) ON DELETE CASCADE
+    );
+    
+    CREATE TABLE IF NOT EXISTS BidSettings (
+        bid_id INTEGER PRIMARY KEY,
+        labor_markup_pct REAL,
+        overhead_pct REAL,
+        profit_pct REAL,
+        commission_amount REAL,
+        tools_rental_amount REAL,
+        tools_rental_type TEXT,
+        shipping_amount REAL,
+        use_tax_pct REAL,
+        FOREIGN KEY (bid_id) REFERENCES Bids (bid_id) ON DELETE CASCADE
+    );
+    
+    CREATE TABLE IF NOT EXISTS BidWorkers (
+        worker_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        bid_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        wage_per_hour REAL,
+        hours REAL,
+        total_cost REAL,
+        FOREIGN KEY (bid_id) REFERENCES Bids (bid_id) ON DELETE CASCADE
+    );
+    
+    CREATE TABLE IF NOT EXISTS BidSections (
+        section_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        bid_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        material_total REAL,
+        labor_total REAL,
+        FOREIGN KEY (bid_id) REFERENCES Bids (bid_id) ON DELETE CASCADE
+    );
+    
+    CREATE TABLE IF NOT EXISTS BidLineItems (
+        line_item_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        section_id INTEGER NOT NULL,
+        item_code TEXT,
+        description TEXT,
+        material_type TEXT,
+        unit TEXT,
+        unit_price REAL,
+        quantity REAL,
+        material_cost REAL,
+        labor_cost REAL,
+        reason TEXT,
+        FOREIGN KEY (section_id) REFERENCES BidSections (section_id) ON DELETE CASCADE
+    );
+    
+    CREATE TABLE IF NOT EXISTS Exports (
+        export_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        bid_id INTEGER NOT NULL,
+        export_type TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (bid_id) REFERENCES Bids (bid_id) ON DELETE CASCADE
+    );
+    
+    CREATE TABLE IF NOT EXISTS Autosaves (
+        autosave_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL UNIQUE,
+        payload_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (user_id) REFERENCES Users (user_id) ON DELETE CASCADE
+    );
     """
 
     def __init__(self):
@@ -56,10 +161,48 @@ class DBConnector:
             # Connect to the database (creates file if it doesn't exist)
             self._connection = sqlite3.connect(self.DB_PATH)
             self._cursor = self._connection.cursor()
+            self._cursor.execute("PRAGMA foreign_keys = ON;")
             
             # Execute schema creation script
             self._cursor.executescript(self.CREATE_TABLES_SQL)
             self._connection.commit()
+            
+            # --- Lightweight schema migration: drop customer_id from Projects ---
+            # NOTE: This keeps historical data but aligns schema with the
+            # "project-only" model until customer management is needed.
+            columns = [row[1] for row in self._cursor.execute("PRAGMA table_info(Projects);")]
+            if "customer_id" in columns:
+                self._cursor.execute("PRAGMA foreign_keys = OFF;")
+                self._cursor.executescript(
+                    """
+                    CREATE TABLE IF NOT EXISTS Projects_v2 (
+                        project_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id INTEGER NOT NULL,
+                        name TEXT NOT NULL,
+                        building_height_ft REAL,
+                        roof_area_sqft REAL,
+                        perimeter_ft REAL,
+                        num_corners INTEGER,
+                        has_metal_roof INTEGER DEFAULT 0,
+                        preferred_material TEXT,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        UNIQUE(user_id, name),
+                        FOREIGN KEY (user_id) REFERENCES Users (user_id)
+                    );
+                    INSERT INTO Projects_v2 (
+                        project_id, user_id, name, building_height_ft, roof_area_sqft, perimeter_ft,
+                        num_corners, has_metal_roof, preferred_material, created_at, updated_at
+                    )
+                    SELECT project_id, user_id, name, building_height_ft, roof_area_sqft, perimeter_ft,
+                           num_corners, has_metal_roof, preferred_material, created_at, updated_at
+                    FROM Projects;
+                    DROP TABLE Projects;
+                    ALTER TABLE Projects_v2 RENAME TO Projects;
+                    """
+                )
+                self._cursor.execute("PRAGMA foreign_keys = ON;")
+                self._connection.commit()
             
         except sqlite3.Error as e:
             print(f"Database error during initialization: {e}")
