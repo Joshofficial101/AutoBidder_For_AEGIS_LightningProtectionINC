@@ -9,6 +9,7 @@ hidden_imports = collect_submodules("flet")
 
 datas = [
     ("data/inputs", "data/inputs"),
+    ("assets", "assets"),  # Include bundled assets (login images, icons)
 ]
 
 a = Analysis(

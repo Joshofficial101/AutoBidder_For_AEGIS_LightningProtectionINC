@@ -122,8 +122,13 @@ class LoginScreen(ft.Container):
         )
 
     def _resolve_logo_path(self) -> Optional[str]:
-        """Find a local logo file if present."""
+        """Find a local logo file if present.
+        
+        First checks assets folder (bundled with app), then falls back to
+        data/inputs for backward compatibility.
+        """
         root_dir = _get_resource_root()
+        # Primary locations - assets folder (bundled with app)
         candidates = [
             root_dir / "assets" / "company_logo.png",
             root_dir / "assets" / "company_logo.jpg",
@@ -131,11 +136,11 @@ class LoginScreen(ft.Container):
             root_dir / "assets" / "aegis_logo.jpg",
             root_dir / "assets" / "logo.png",
             root_dir / "assets" / "logo.jpg",
+            # Legacy fallback locations (for backward compatibility only)
             root_dir / "aegis_logo.png",
             root_dir / "aegis_logo.jpg",
             root_dir / "logo.png",
             root_dir / "logo.jpg",
-            root_dir / "data" / "inputs" / "thumbnail_image005.png",
         ]
         for candidate in candidates:
             if candidate.exists():
@@ -221,13 +226,31 @@ class LoginScreen(ft.Container):
         else:
             self._on_login(username, password)
 
+def _resolve_background_path() -> Optional[str]:
+    """Find a background image file if present.
+    
+    First checks assets folder (bundled with app), then falls back to
+    data/inputs for backward compatibility.
+    """
+    root_dir = _get_resource_root()
+    # Primary locations - assets folder (bundled with app)
+    candidates = [
+        root_dir / "assets" / "login_background.jpg",
+        root_dir / "assets" / "login_background.png",
+        root_dir / "assets" / "background.jpg",
+        root_dir / "assets" / "background.png",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    return None
+
+
 def create_login_view(on_login_submit, on_create_account_click):
     """Creates the centered view containing the LoginScreen."""
     login_screen = LoginScreen(on_login_submit, on_create_account_click)
     
-    root_dir = _get_resource_root()
-    background_image = root_dir / "data" / "inputs" / "pexels-andre-ulysses-de-salis-2100065-7843670.jpg"
-    background_src = str(background_image) if background_image.exists() else None
+    background_src = _resolve_background_path()
     
     # Use explicit large dimensions with COVER to ensure full-bleed on any monitor
     background_layer = ft.Container(
