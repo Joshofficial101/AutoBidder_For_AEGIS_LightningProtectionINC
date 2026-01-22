@@ -122,20 +122,25 @@ class LoginScreen(ft.Container):
         )
 
     def _resolve_logo_path(self) -> Optional[str]:
-        """Find a local logo file if present."""
+        """Find a local logo file if present.
+        
+        Images are stored in the assets folder to persist independently
+        of user data files in the inputs folder.
+        """
         root_dir = _get_resource_root()
         candidates = [
+            # Primary location: assets folder (persists even when inputs are cleared)
             root_dir / "assets" / "company_logo.png",
             root_dir / "assets" / "company_logo.jpg",
             root_dir / "assets" / "aegis_logo.png",
             root_dir / "assets" / "aegis_logo.jpg",
             root_dir / "assets" / "logo.png",
             root_dir / "assets" / "logo.jpg",
+            # Fallback locations
             root_dir / "aegis_logo.png",
             root_dir / "aegis_logo.jpg",
             root_dir / "logo.png",
             root_dir / "logo.jpg",
-            root_dir / "data" / "inputs" / "thumbnail_image005.png",
         ]
         for candidate in candidates:
             if candidate.exists():
@@ -226,7 +231,8 @@ def create_login_view(on_login_submit, on_create_account_click):
     login_screen = LoginScreen(on_login_submit, on_create_account_click)
     
     root_dir = _get_resource_root()
-    background_image = root_dir / "data" / "inputs" / "pexels-andre-ulysses-de-salis-2100065-7843670.jpg"
+    # Background image is stored in assets folder to persist independently of user data
+    background_image = root_dir / "assets" / "login_background.jpg"
     background_src = str(background_image) if background_image.exists() else None
     
     # Use explicit large dimensions with COVER to ensure full-bleed on any monitor
