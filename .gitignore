@@ -6,3 +6,9 @@ data/outputs/
 .idea/
 .vscode/
 /nul
+
+# Build artifacts
+build/
+dist/
+*.spec
+*.egg-info/
