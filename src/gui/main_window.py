@@ -6,6 +6,8 @@ bidding workflow through a user-friendly graphical interface.
 """
 
 import flet as ft
+import json
+from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any
 # FIX: Explicitly import all constant classes for Windows compatibility
@@ -18,6 +20,7 @@ from tkinter import filedialog
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.database.db_connector import DBConnector 
+from src.database.bid_repository import BidRepository
 from src.gui.login_screen import LoginScreen, create_login_view 
 from src.adapters.excel_loader import load_pricing_from_excel
 from src.adapters.pdf_loader import extract_project_data
@@ -45,9 +48,21 @@ class LightningBidApp:
         self.page.window.height = 800
         self.page.window.min_width = 1000
         self.page.window.min_height = 600
+
+        # Main layout state (enterprise shell)
+        self.nav_collapsed = False
+        self.active_module = "bidding"
+        self.nav_items = []
+        self.nav_rail: Optional[ft.NavigationRail] = None
+        self.left_nav_container: Optional[ft.Container] = None
+        self.content_container: Optional[ft.Container] = None
+        self.module_views: Dict[str, ft.Control] = {}
         
         # --- NEW: DB and Authentication State ---
         self.db = self._initialize_db()
+        # NOTE: Repository layer is a temporary local DB adapter.
+        # This will be swapped to a SaaS API client later without changing GUI code.
+        self.repo = BidRepository(self.db) if self.db else None
         self.current_user_id: Optional[int] = None
         # ----------------------------------------
         
@@ -94,6 +109,10 @@ class LightningBidApp:
         self.pdf_file_path: Optional[Path] = None
         self.output_dir = Path(__file__).parent.parent.parent / "data" / "outputs"
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        # Track last export paths for recovery (stored in DB autosave for now)
+        self.last_excel_export: Optional[str] = None
+        self.last_pdf_export: Optional[str] = None
+        self.current_bid_id: Optional[int] = None
         
         # --- NEW CODE: Initialize Global Dialog for Feedback ---
         self.feedback_dialog = ft.AlertDialog(
@@ -140,6 +159,166 @@ class LightningBidApp:
         )
         self.page.views.clear()
         self.page.views.append(login_view)
+        self.page.update()
+
+    # --- SESSION AUTO-SAVE (DB-backed, SaaS-ready) ---
+    def _build_session_payload(self) -> Dict[str, Any]:
+        """Build a JSON-serializable session snapshot (DB-backed, SaaS-ready)."""
+        # NOTE: This JSON payload is stored in SQLite for now.
+        # When the SaaS API is added, this payload will be sent to the backend
+        # instead of a local DB table.
+        workers_clean = [
+            {
+                "name": w.get("name", "Worker"),
+                "wage_per_hour": w.get("wage_per_hour", 0),
+                "hours": w.get("hours", 0),
+            }
+            for w in self.workers
+        ]
+        
+        return {
+            "version": 1,
+            "saved_at": datetime.utcnow().isoformat(),
+            "project_data": self.project_data,
+            "workers": workers_clean,
+            "pricing_settings": {
+                "labor_markup_pct": self.labor_markup_pct,
+                "overhead_pct": self.overhead_pct,
+                "profit_pct": self.profit_pct,
+                "commission_amount": self.commission_amount,
+                "tools_rental_amount": self.tools_rental_amount,
+                "tools_rental_type": self.tools_rental_type,
+                "use_tax_pct": self.use_tax_pct,
+                "shipping_amount": self.shipping_amount,
+            },
+            "file_paths": {
+                "excel": str(self.excel_file_path) if self.excel_file_path else None,
+                "pdf": str(self.pdf_file_path) if self.pdf_file_path else None,
+            },
+            "last_exports": {
+                "excel": self.last_excel_export,
+                "pdf": self.last_pdf_export,
+            }
+        }
+    
+    def _save_session(self, reason: str = ""):
+        """Persist a session snapshot (DB-backed, SaaS-ready)."""
+        if not self.repo or not self.current_user_id:
+            return
+        try:
+            payload = self._build_session_payload()
+            payload["reason"] = reason
+            self.repo.save_autosave(self.current_user_id, payload)
+        except Exception:
+            # Avoid breaking the UI for autosave failures
+            pass
+    
+    def _load_session(self) -> Optional[Dict[str, Any]]:
+        """Load a saved session snapshot if present (DB-backed, SaaS-ready)."""
+        if not self.repo or not self.current_user_id:
+            return None
+        try:
+            data = self.repo.load_autosave(self.current_user_id)
+            return data if isinstance(data, dict) else None
+        except Exception:
+            return None
+    
+    def _clear_session(self):
+        """Remove the autosave record (DB-backed, SaaS-ready)."""
+        if not self.repo or not self.current_user_id:
+            return
+        try:
+            self.repo.clear_autosave(self.current_user_id)
+        except Exception:
+            pass
+    
+    def _apply_session_data(self, data: Dict[str, Any]):
+        """Apply session data to UI and state (DB-backed, SaaS-ready)."""
+        project_data = data.get("project_data", {})
+        self.project_data.update(project_data)
+        
+        # Update fields if they exist
+        if hasattr(self, "project_name_field"):
+            self.project_name_field.value = project_data.get("project_name", "")
+        if hasattr(self, "height_field"):
+            self.height_field.value = str(project_data.get("building_height_ft") or "")
+        if hasattr(self, "area_field"):
+            self.area_field.value = str(project_data.get("roof_area_sqft") or "")
+        if hasattr(self, "perimeter_field"):
+            self.perimeter_field.value = str(project_data.get("perimeter_ft") or "")
+        if hasattr(self, "corners_field"):
+            self.corners_field.value = str(project_data.get("num_corners") or 4)
+        if hasattr(self, "material_dropdown"):
+            self.material_dropdown.value = project_data.get("preferred_material", "copper")
+        if hasattr(self, "metal_roof_checkbox"):
+            self.metal_roof_checkbox.value = bool(project_data.get("has_metal_roof", False))
+        
+        # Restore workers (ensure at least one)
+        workers = data.get("workers") or []
+        self.workers = workers if workers else [{"name": "Worker 1", "wage_per_hour": 25.0, "hours": 40.0}]
+        
+        # Restore pricing settings
+        pricing = data.get("pricing_settings", {})
+        self.labor_markup_pct = float(pricing.get("labor_markup_pct", self.labor_markup_pct))
+        self.overhead_pct = float(pricing.get("overhead_pct", self.overhead_pct))
+        self.profit_pct = float(pricing.get("profit_pct", self.profit_pct))
+        self.commission_amount = float(pricing.get("commission_amount", self.commission_amount))
+        self.tools_rental_amount = float(pricing.get("tools_rental_amount", self.tools_rental_amount))
+        self.tools_rental_type = pricing.get("tools_rental_type", self.tools_rental_type)
+        self.use_tax_pct = float(pricing.get("use_tax_pct", self.use_tax_pct))
+        self.shipping_amount = float(pricing.get("shipping_amount", self.shipping_amount))
+        
+        # Restore file paths (if they still exist)
+        file_paths = data.get("file_paths", {})
+        excel_path = file_paths.get("excel")
+        pdf_path = file_paths.get("pdf")
+        if excel_path and Path(excel_path).exists():
+            self.excel_file_path = Path(excel_path)
+            if hasattr(self, "excel_file_text"):
+                self.excel_file_text.value = self.excel_file_path.name
+        if pdf_path and Path(pdf_path).exists():
+            self.pdf_file_path = Path(pdf_path)
+            if hasattr(self, "pdf_file_text"):
+                self.pdf_file_text.value = self.pdf_file_path.name
+        
+        # Restore last export paths (informational only)
+        exports = data.get("last_exports", {})
+        self.last_excel_export = exports.get("excel")
+        self.last_pdf_export = exports.get("pdf")
+        
+        self.page.update()
+    
+    def _prompt_restore_session(self):
+        """Prompt user to restore a previous session (DB-backed, SaaS-ready)."""
+        session_data = self._load_session()
+        if not session_data:
+            return
+        
+        def restore_session(_):
+            self._apply_session_data(session_data)
+            recovery_dialog.open = False
+            self.page.update()
+        
+        def discard_session(_):
+            self._clear_session()
+            recovery_dialog.open = False
+            self.page.update()
+        
+        recovery_dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Restore previous session?"),
+            content=ft.Text(
+                "We found an autosaved session from your last work. "
+                "Would you like to restore it?"
+            ),
+            actions=[
+                ft.TextButton("Discard", on_click=discard_session),
+                ft.ElevatedButton("Restore", on_click=restore_session, bgcolor=Colors.GREEN_700, color=Colors.WHITE),
+            ],
+            actions_alignment=MainAxisAlignment.END,
+        )
+        self.page.overlay.append(recovery_dialog)
+        recovery_dialog.open = True
         self.page.update()
 
     # --- LOGIN HANDLER ---
@@ -205,69 +384,264 @@ class LightningBidApp:
     # --- BUILD MAIN UI ---
     def _build_main_ui(self):
         """Build the main user interface and display it."""
-        # File selection section
-        file_section = self._build_file_section()
-        
-        # Project information section
-        project_section = self._build_project_section()
-        
-        # Actions section
-        actions_section = self._build_actions_section()
-        
-        # Bid display section
-        bid_display = self._build_bid_display()
-        
-        # Add file pickers to overlay (must be done after page is ready)
-        self.page.overlay.append(self.excel_file_picker)
-        self.page.overlay.append(self.pdf_file_picker)
-        
-        # The file pickers for saving were introduced in the merged code:
-        self.page.overlay.append(self.excel_save_picker)
-        self.page.overlay.append(self.pdf_save_picker)
-        
-        # Debug: Verify file pickers are in overlay
-        print(f"DEBUG: File pickers in overlay: excel_save={self.excel_save_picker in self.page.overlay}, pdf_save={self.pdf_save_picker in self.page.overlay}")
-        self.page.update()
-        
-        # Layout
-        main_view_content = ft.Container( 
-            content=ft.Column(
-                [
-                    ft.Text(
-                        "Lightning Protection Bidding System",
-                        size=24,
-                        weight=FontWeight.BOLD,
-                        color=Colors.BLUE_700
-                    ),
-                    ft.Divider(),
-                    file_section,
-                    ft.Divider(),
-                    project_section,
-                    ft.Divider(),
-                    actions_section,
-                    ft.Divider(),
-                    bid_display,
-                ],
-                scroll=ScrollMode.AUTO,
-                spacing=15
+        # Module registry (enterprise shell)
+        self.nav_items = [
+            {"key": "dashboard", "label": "Dashboard", "icon": ft.Icons.DASHBOARD},
+            {"key": "projects", "label": "Projects", "icon": ft.Icons.FOLDER},
+            {"key": "bidding", "label": "Bidding", "icon": ft.Icons.REQUEST_QUOTE},
+            {"key": "reports", "label": "Reports", "icon": ft.Icons.ASSESSMENT},
+        ]
+
+        # Build module views once to preserve control state
+        self.module_views = {
+            "dashboard": self._build_placeholder_view(
+                "Dashboard",
+                "Company overview, KPIs, and recent activity will appear here."
             ),
-            padding=20,
-            expand=True
+            "projects": self._build_placeholder_view(
+                "Projects",
+                "Project lists, filtering, and collaboration tools will appear here."
+            ),
+            "bidding": self._build_bidding_view(),
+            "reports": self._build_placeholder_view(
+                "Reports",
+                "Reporting, exports, and analytics will appear here."
+            ),
+        }
+
+        # Ensure file pickers are attached after building bidding view
+        self._ensure_file_pickers_in_overlay()
+
+        # Shell layout (left nav + content)
+        self.content_container = ft.Container(expand=True)
+        self._set_active_module(self.active_module, update=False)
+        shell_layout = ft.Row(
+            [
+                self._build_left_nav(),
+                self.content_container
+            ],
+            expand=True,
+            spacing=0
         )
-        
-        # NEW: Create a new View and update the page
+
         main_view = ft.View(
             "/",
-            [
-                main_view_content
-            ],
-            vertical_alignment=MainAxisAlignment.START 
+            [shell_layout],
+            padding=0,
+            bgcolor=Colors.GREY_100,
+            vertical_alignment=MainAxisAlignment.START
         )
         self.page.views.clear()
         self.page.views.append(main_view)
         self.page.update()
+        
+        # Offer to restore last session (TEMP until DB migration)
+        self._prompt_restore_session()
+        
+        # Populate bid history if possible
+        self._refresh_bid_history()
+        self._refresh_recent_bids()
 
     # --- UI COMPONENT BUILDERS ---
+
+    def _build_left_nav(self) -> ft.Container:
+        """Build the collapsible left navigation rail."""
+        destinations = [
+            ft.NavigationRailDestination(
+                icon=item["icon"],
+                label=item["label"]
+            )
+            for item in self.nav_items
+        ]
+        selected_index = self._nav_index_from_key(self.active_module)
+        self.nav_rail = ft.NavigationRail(
+            selected_index=selected_index,
+            destinations=destinations,
+            extended=not self.nav_collapsed,
+            min_width=72,
+            min_extended_width=220,
+            leading=ft.IconButton(
+                icon=ft.Icons.MENU,
+                tooltip="Collapse menu",
+                on_click=self._toggle_nav
+            ),
+            on_change=self._on_nav_change
+        )
+        self.left_nav_container = ft.Container(
+            content=self.nav_rail,
+            width=220 if not self.nav_collapsed else 72,
+            bgcolor=Colors.WHITE,
+            border=ft.border.only(right=ft.BorderSide(1, Colors.GREY_300)),
+            padding=ft.padding.only(top=10, bottom=10)
+        )
+        return self.left_nav_container
+
+    def _build_content_header(self, title: str, subtitle: Optional[str] = None) -> ft.Container:
+        """Builds the top content header."""
+        header_text = ft.Column(
+            [
+                ft.Text(title, size=22, weight=FontWeight.BOLD, color=Colors.BLUE_800),
+                ft.Text(subtitle or "Enterprise workspace", size=12, color=Colors.GREY_600),
+            ],
+            spacing=2
+        )
+        return ft.Container(
+            content=ft.Row(
+                [header_text],
+                alignment=MainAxisAlignment.SPACE_BETWEEN,
+                vertical_alignment=CrossAxisAlignment.CENTER
+            ),
+            padding=ft.padding.symmetric(horizontal=20, vertical=16),
+            bgcolor=Colors.WHITE,
+            border=ft.border.only(bottom=ft.BorderSide(1, Colors.GREY_300))
+        )
+
+    def _build_tab_bar(self, tabs: list[str]) -> ft.Container:
+        """Builds a tabbed header bar."""
+        tab_control = ft.Tabs(
+            tabs=[ft.Tab(text=tab) for tab in tabs],
+            selected_index=0,
+            indicator_color=Colors.BLUE_600
+        )
+        return ft.Container(
+            content=tab_control,
+            padding=ft.padding.symmetric(horizontal=16, vertical=6),
+            bgcolor=Colors.WHITE,
+            border=ft.border.only(bottom=ft.BorderSide(1, Colors.GREY_200))
+        )
+
+    def _build_toolbar(self) -> ft.Container:
+        """Builds the search + filter toolbar."""
+        search_field = ft.TextField(
+            hint_text="Search",
+            prefix_icon=ft.Icons.SEARCH,
+            height=40,
+            expand=True
+        )
+        filter_btn = ft.OutlinedButton("Filters", icon=ft.Icons.TUNE)
+        sort_btn = ft.OutlinedButton("Sort", icon=ft.Icons.SWAP_VERT)
+        return ft.Container(
+            content=ft.Row(
+                [search_field, filter_btn, sort_btn],
+                spacing=10
+            ),
+            padding=ft.padding.symmetric(horizontal=16, vertical=12),
+            bgcolor=Colors.WHITE,
+            border=ft.border.only(bottom=ft.BorderSide(1, Colors.GREY_200))
+        )
+
+    def _build_module_layout(self, module_key: str) -> ft.Container:
+        """Builds the main content area for a module."""
+        module_titles = {
+            "dashboard": "Dashboard",
+            "projects": "Projects",
+            "bidding": "Bidding Workspace",
+            "reports": "Reports",
+        }
+        module_tabs = {
+            "dashboard": ["Overview", "Insights"],
+            "projects": ["Directory", "Connections"],
+            "bidding": ["Overview", "Workflow"],
+            "reports": ["Summary", "Exports"],
+        }
+        title = module_titles.get(module_key, "Workspace")
+        tabs = module_tabs.get(module_key, ["Overview"])
+        content_view = self.module_views.get(module_key, ft.Container())
+
+        return ft.Container(
+            content=ft.Column(
+                [
+                    self._build_content_header(title),
+                    self._build_tab_bar(tabs),
+                    self._build_toolbar(),
+                    ft.Container(
+                        content=content_view,
+                        expand=True,
+                        padding=20
+                    )
+                ],
+                spacing=0,
+                expand=True
+            ),
+            expand=True,
+            bgcolor=Colors.GREY_100
+        )
+
+    def _build_bidding_view(self) -> ft.Control:
+        """Build the bidding module content view."""
+        file_section = self._build_file_section()
+        project_section = self._build_project_section()
+        actions_section = self._build_actions_section()
+        bid_display = self._build_bid_display()
+
+        return ft.Container(
+            content=ft.Column(
+                [
+                    file_section,
+                    project_section,
+                    actions_section,
+                    bid_display
+                ],
+                spacing=16,
+                scroll=ScrollMode.AUTO
+            ),
+            expand=True
+        )
+
+    def _build_placeholder_view(self, title: str, description: str) -> ft.Control:
+        """Simple placeholder content for future modules."""
+        return ft.Container(
+            content=ft.Column(
+                [
+                    ft.Text(title, size=18, weight=FontWeight.BOLD),
+                    ft.Text(description, size=12, color=Colors.GREY_600),
+                ],
+                spacing=8
+            ),
+            padding=20,
+            bgcolor=Colors.WHITE,
+            border=ft.border.all(1, Colors.GREY_300),
+            border_radius=10,
+            expand=True
+        )
+
+    def _set_active_module(self, module_key: str, update: bool = True):
+        """Switch the active module content."""
+        self.active_module = module_key
+        if self.content_container:
+            self.content_container.content = self._build_module_layout(module_key)
+        if update:
+            self.page.update()
+
+    def _nav_index_from_key(self, module_key: str) -> int:
+        for i, item in enumerate(self.nav_items):
+            if item["key"] == module_key:
+                return i
+        return 0
+
+    def _on_nav_change(self, e):
+        idx = e.control.selected_index
+        if 0 <= idx < len(self.nav_items):
+            self._set_active_module(self.nav_items[idx]["key"])
+
+    def _toggle_nav(self, e):
+        self.nav_collapsed = not self.nav_collapsed
+        if self.nav_rail:
+            self.nav_rail.extended = not self.nav_collapsed
+        if self.left_nav_container:
+            self.left_nav_container.width = 72 if self.nav_collapsed else 220
+        self.page.update()
+
+    def _ensure_file_pickers_in_overlay(self):
+        """Ensure file pickers are attached to the page overlay."""
+        for picker in [
+            getattr(self, "excel_file_picker", None),
+            getattr(self, "pdf_file_picker", None),
+            getattr(self, "excel_save_picker", None),
+            getattr(self, "pdf_save_picker", None),
+        ]:
+            if picker and picker not in self.page.overlay:
+                self.page.overlay.append(picker)
     
     def _build_file_section(self) -> ft.Container:
         """Build file selection section."""
@@ -333,9 +707,10 @@ class LightningBidApp:
                 ],
                 spacing=10
             ),
-            padding=10,
-            bgcolor=Colors.GREY_100,
-            border_radius=10
+            padding=16,
+            bgcolor=Colors.WHITE,
+            border=ft.border.all(1, Colors.GREY_300),
+            border_radius=12
         )
     
     def _build_project_section(self) -> ft.Container:
@@ -347,6 +722,7 @@ class LightningBidApp:
             value="",
             on_change=self._on_project_field_change
         )
+        
         
         # Building dimensions with validation
         self.height_field = ft.TextField(
@@ -435,6 +811,25 @@ class LightningBidApp:
             on_change=self._on_project_field_change
         )
         
+        # Bid history selector (DB-backed)
+        self.bid_history_dropdown = ft.Dropdown(
+            label="Bid History",
+            options=[],
+            width=300
+        )
+        
+        self.load_bid_btn = ft.ElevatedButton(
+            "Load Bid",
+            on_click=self._load_selected_bid
+        )
+        
+        # Recent bids list (DB-backed)
+        self.recent_bids_list = ft.ListView(
+            height=160,
+            spacing=6,
+            padding=6
+        )
+        
         return ft.Container(
             content=ft.Column(
                 [
@@ -462,18 +857,27 @@ class LightningBidApp:
                         self.metal_roof_checkbox,
                         self.corners_field
                     ])
+                    ,
+                    ft.Row([
+                        self.bid_history_dropdown,
+                        self.load_bid_btn
+                    ], spacing=10)
+                    ,
+                    ft.Text("Recent Bids", weight=FontWeight.BOLD, size=14),
+                    self.recent_bids_list
                 ],
                 spacing=10
             ),
-            padding=10,
-            bgcolor=Colors.GREY_100,
-            border_radius=10
+            padding=16,
+            bgcolor=Colors.WHITE,
+            border=ft.border.all(1, Colors.GREY_300),
+            border_radius=12
         )
     
     def _build_actions_section(self) -> ft.Container:
         """Build action buttons section."""
         self.parse_pdf_btn = ft.ElevatedButton(
-            "📄 Parse PDF",
+            "📄 Search PDF",
             on_click=self._parse_pdf,
             disabled=False
         )
@@ -510,7 +914,10 @@ class LightningBidApp:
                 ],
                 spacing=10
             ),
-            padding=10
+            padding=16,
+            bgcolor=Colors.WHITE,
+            border=ft.border.all(1, Colors.GREY_300),
+            border_radius=12
         )
     
     def _build_bid_display(self) -> ft.Container:
@@ -567,9 +974,10 @@ class LightningBidApp:
                 ],
                 spacing=10
             ),
-            padding=10,
-            bgcolor=Colors.BLUE_50,
-            border_radius=10
+            padding=16,
+            bgcolor=Colors.WHITE,
+            border=ft.border.all(1, Colors.GREY_300),
+            border_radius=12
         )
     
     # --- EVENT HANDLERS ---
@@ -792,6 +1200,11 @@ class LightningBidApp:
                     self.project_data["num_corners"] = int(e.control.value) if e.control.value else 4
                 except ValueError:
                     pass
+        
+        # Auto-save session after any project field change (TEMP until DB migration)
+        self._save_session(reason="project_field_change")
+        # Refresh bid history list if possible
+        self._refresh_bid_history()
     
     def _validate_dimension_field(self, value: str, field_type: str, 
                                    field_control: ft.TextField, 
@@ -939,9 +1352,46 @@ class LightningBidApp:
             self._show_feedback_dialog("PDF parsed successfully!", Colors.GREEN)
             self.page.update()
             
+            # Auto-save session after successful parse (TEMP until DB migration)
+            self._save_session(reason="pdf_parsed")
+            
         except Exception as ex:
             self.page.splash = None
-            self._show_feedback_dialog(f"Error parsing PDF: {str(ex)[:100]}", Colors.RED)
+            error_message = (
+                "We couldn't parse the PDF. The file may be scanned-only, "
+                "corrupted, or protected."
+            )
+            
+            def retry_parse(_):
+                error_dialog.open = False
+                self.page.update()
+                self._parse_pdf(None)
+            
+            def choose_another(_):
+                error_dialog.open = False
+                self.page.update()
+                self.pdf_file_picker.pick_files(
+                    allowed_extensions=["pdf"],
+                    dialog_title="Select PDF Specification File"
+                )
+            
+            def cancel(_):
+                error_dialog.open = False
+                self.page.update()
+            
+            error_dialog = ft.AlertDialog(
+                modal=True,
+                title=ft.Text("PDF Parse Error"),
+                content=ft.Text(f"{error_message}\n\nDetails: {str(ex)[:120]}"),
+                actions=[
+                    ft.TextButton("Cancel", on_click=cancel),
+                    ft.TextButton("Choose Another", on_click=choose_another),
+                    ft.ElevatedButton("Retry", on_click=retry_parse, bgcolor=Colors.BLUE_700, color=Colors.WHITE),
+                ],
+                actions_alignment=MainAxisAlignment.END,
+            )
+            self.page.overlay.append(error_dialog)
+            error_dialog.open = True
             self.page.update()
     
     def _load_excel(self, e):
@@ -967,6 +1417,9 @@ class LightningBidApp:
                 Colors.GREEN
             )
             
+            # Auto-save session after successful load (TEMP until DB migration)
+            self._save_session(reason="excel_loaded")
+            
             # Update calculate button state (checks both pricing and validation)
             self._update_calculate_button_state()
             
@@ -974,7 +1427,41 @@ class LightningBidApp:
             
         except Exception as ex:
             self.page.splash = None
-            self._show_feedback_dialog(f"Error loading Excel: {str(ex)[:100]}", Colors.RED)
+            error_message = (
+                "We couldn't load the Excel pricing file. The file may be corrupted, "
+                "locked by another program, or missing required columns."
+            )
+            
+            def retry_load(_):
+                error_dialog.open = False
+                self.page.update()
+                self._load_excel(None)
+            
+            def choose_another(_):
+                error_dialog.open = False
+                self.page.update()
+                self.excel_file_picker.pick_files(
+                    allowed_extensions=["xlsx", "xls"],
+                    dialog_title="Select Excel Pricing File"
+                )
+            
+            def cancel(_):
+                error_dialog.open = False
+                self.page.update()
+            
+            error_dialog = ft.AlertDialog(
+                modal=True,
+                title=ft.Text("Excel Load Error"),
+                content=ft.Text(f"{error_message}\n\nDetails: {str(ex)[:120]}"),
+                actions=[
+                    ft.TextButton("Cancel", on_click=cancel),
+                    ft.TextButton("Choose Another", on_click=choose_another),
+                    ft.ElevatedButton("Retry", on_click=retry_load, bgcolor=Colors.BLUE_700, color=Colors.WHITE),
+                ],
+                actions_alignment=MainAxisAlignment.END,
+            )
+            self.page.overlay.append(error_dialog)
+            error_dialog.open = True
             self.page.update()
     
     def _update_calculate_button_state(self):
@@ -1061,6 +1548,16 @@ class LightningBidApp:
             calculator = BidCalculator(self.price_catalog, compliance_code="DUAL")
             self.current_bid = calculator.calculate_bid(self.project_data)
             
+            # Guard: if no sections/items were generated, stop and warn user
+            if not self.current_bid.sections:
+                self.page.splash = None
+                self._show_feedback_dialog(
+                    "No bid items were generated. Check your inputs and pricing catalog.",
+                    Colors.RED
+                )
+                self.page.update()
+                return
+            
             # Apply worker-based labor costs
             self._apply_worker_labor_costs()
             
@@ -1076,6 +1573,25 @@ class LightningBidApp:
                 f"Bid calculated successfully!\nCrew: {worker_summary}",
                 Colors.GREEN
             )
+            
+            # Persist bid to DB (SaaS-ready repo layer)
+            if self.repo and self.current_user_id:
+                project_id = self.repo.get_or_create_project(
+                    self.current_user_id,
+                    self.project_data.get("project_name", "Untitled Project"),
+                    self.project_data
+                )
+                self.current_bid_id = self.repo.create_bid(
+                    self.current_user_id,
+                    project_id,
+                    self.current_bid,
+                    self.workers
+                )
+                self._refresh_bid_history()
+                self._refresh_recent_bids()
+            
+            # Auto-save session after calculation (TEMP until DB migration)
+            self._save_session(reason="bid_calculated")
             self.page.update()
             
         except Exception as ex:
@@ -1169,6 +1685,19 @@ class LightningBidApp:
             excel_exporter.export_bid(self.current_bid, excel_output, workers=self.workers)
             print(f"DEBUG: Excel successfully exported to: {excel_output}")
             self._show_feedback_dialog(f"Excel exported to: {excel_output.name}", Colors.GREEN)
+            
+            # Track last export + autosave (TEMP until DB migration)
+            self.last_excel_export = str(excel_output)
+            self._save_session(reason="excel_exported")
+            
+            if self.repo and self.current_user_id and self.current_bid_id:
+                self.repo.save_export(self.current_bid_id, "excel", str(excel_output))
+        except PermissionError:
+            self._show_feedback_dialog(
+                "Excel export failed: file is open or you don't have permission. "
+                "Close the file or choose another location.",
+                Colors.RED
+            )
         except Exception as ex:
             print(f"ERROR exporting Excel: {ex}")
             import traceback
@@ -1199,6 +1728,19 @@ class LightningBidApp:
             pdf_exporter.export_submittal(self.current_bid, pdf_output, "UL 96A + NFPA 780")
             print(f"DEBUG: PDF successfully exported to: {pdf_output}")
             self._show_feedback_dialog(f"PDF exported to: {pdf_output.name}", Colors.GREEN)
+            
+            # Track last export + autosave (TEMP until DB migration)
+            self.last_pdf_export = str(pdf_output)
+            self._save_session(reason="pdf_exported")
+            
+            if self.repo and self.current_user_id and self.current_bid_id:
+                self.repo.save_export(self.current_bid_id, "pdf", str(pdf_output))
+        except PermissionError:
+            self._show_feedback_dialog(
+                "PDF export failed: file is open or you don't have permission. "
+                "Close the file or choose another location.",
+                Colors.RED
+            )
         except Exception as ex:
             print(f"ERROR exporting PDF: {ex}")
             import traceback
@@ -1406,6 +1948,8 @@ class LightningBidApp:
             })
             update_worker_list()
             self.page.update()
+            # Auto-save after worker changes (TEMP until DB migration)
+            self._save_session(reason="worker_added")
         
         def remove_worker(idx):
             """Remove a worker from the list."""
@@ -1413,6 +1957,8 @@ class LightningBidApp:
                 self.workers.pop(idx)
                 update_worker_list()
                 self.page.update()
+                # Auto-save after worker changes (TEMP until DB migration)
+                self._save_session(reason="worker_removed")
             else:
                 self._show_feedback_dialog("You must have at least one worker", Colors.AMBER_600)
         
@@ -1481,6 +2027,9 @@ class LightningBidApp:
                 self.use_tax_pct = use_tax
                 self.shipping_amount = shipping
                 
+                # Auto-save settings (TEMP until DB migration)
+                self._save_session(reason="bid_settings_saved")
+                
                 # Calculate total labor cost summary
                 total_labor_cost = sum(w.get("hours", 0) * w["wage_per_hour"] for w in self.workers)
                 total_hours = sum(w.get("hours", 0) for w in self.workers)
@@ -1543,6 +2092,8 @@ class LightningBidApp:
         """Update worker name."""
         if idx < len(self.workers):
             self.workers[idx]["name"] = name
+            # Auto-save after worker edit (TEMP until DB migration)
+            self._save_session(reason="worker_name_changed")
     
     def _update_worker_hours(self, idx: int, hours_str: str):
         """Update worker hours."""
@@ -1551,6 +2102,8 @@ class LightningBidApp:
             if idx < len(self.workers) and hours > 0:
                 self.workers[idx]["hours"] = hours
                 self._update_worker_total(idx)
+                # Auto-save after worker edit (TEMP until DB migration)
+                self._save_session(reason="worker_hours_changed")
         except ValueError:
             pass  # Ignore invalid input during typing
     
@@ -1561,6 +2114,8 @@ class LightningBidApp:
             if idx < len(self.workers) and wage > 0:
                 self.workers[idx]["wage_per_hour"] = wage
                 self._update_worker_total(idx)
+                # Auto-save after worker edit (TEMP until DB migration)
+                self._save_session(reason="worker_wage_changed")
         except ValueError:
             pass  # Ignore invalid input during typing
 
@@ -1574,6 +2129,116 @@ class LightningBidApp:
             worker_total = worker.get("hours", 0) * worker.get("wage_per_hour", 0)
             total_text.value = f"${worker_total:,.2f}"
             total_text.update()
+
+    # --- DB-backed bid history ---
+    def _refresh_bid_history(self):
+        """Refresh bid history dropdown based on customer + project."""
+        if not self.repo or not self.current_user_id:
+            return
+        if not hasattr(self, "bid_history_dropdown"):
+            return
+        
+        project_name = (self.project_data.get("project_name") or "").strip()
+        if not project_name:
+            self.bid_history_dropdown.options = []
+            self.bid_history_dropdown.update()
+            return
+        
+        try:
+            project_id = self.repo.get_or_create_project(
+                self.current_user_id,
+                project_name,
+                self.project_data
+            )
+            bids = self.repo.list_bids(self.current_user_id, project_id)
+            options = []
+            for bid in bids:
+                label = f"{bid['created_at']} - ${bid['final_amount']:.2f}"
+                options.append(ft.dropdown.Option(str(bid["bid_id"]), label))
+            self.bid_history_dropdown.options = options
+            self.bid_history_dropdown.update()
+        except Exception:
+            # Ignore history refresh failures
+            pass
+    
+    def _refresh_recent_bids(self):
+        """Refresh recent bids list (works even without customer/project inputs)."""
+        if not self.repo or not self.current_user_id or not hasattr(self, "recent_bids_list"):
+            return
+        try:
+            recent = self.repo.list_recent_bids(self.current_user_id, limit=10)
+            self.recent_bids_list.controls.clear()
+            if not recent:
+                self.recent_bids_list.controls.append(
+                    ft.Text("No recent bids yet.", color=Colors.GREY_600)
+                )
+            else:
+                for item in recent:
+                    label = f"{item['created_at']} • {item['project_name']} • ${item['final_amount']:.2f}"
+                    load_btn = ft.TextButton(
+                        "Load",
+                        on_click=lambda e, bid_id=item["bid_id"]: self._load_recent_bid(bid_id)
+                    )
+                    self.recent_bids_list.controls.append(
+                        ft.Row([ft.Text(label, expand=True), load_btn], alignment=MainAxisAlignment.SPACE_BETWEEN)
+                    )
+            self.recent_bids_list.update()
+        except Exception:
+            pass
+    
+    def _load_recent_bid(self, bid_id: int):
+        """Load a bid selected from the recent list."""
+        if not self.repo or not self.current_user_id:
+            return
+        try:
+            data = self.repo.load_bid(bid_id)
+            if not data:
+                self._show_feedback_dialog("Selected bid not found.", Colors.RED)
+                return
+            
+            self._apply_session_data({
+                "project_data": data["project_data"],
+                "workers": data["workers"],
+                "pricing_settings": data["settings"],
+                "file_paths": {},
+                "last_exports": {},
+            })
+            self.current_bid = data["bid"]
+            self.current_bid_id = bid_id
+            self._update_bid_display()
+            self._refresh_recent_bids()
+            self._show_feedback_dialog("Bid loaded from history.", Colors.GREEN)
+        except Exception as ex:
+            self._show_feedback_dialog(f"Error loading bid: {str(ex)[:100]}", Colors.RED)
+    
+    def _load_selected_bid(self, e):
+        """Load a selected bid from history into the UI."""
+        if not self.repo or not self.current_user_id:
+            return
+        if not self.bid_history_dropdown.value:
+            self._show_feedback_dialog("Select a bid from history first.", Colors.AMBER_600)
+            return
+        
+        try:
+            bid_id = int(self.bid_history_dropdown.value)
+            data = self.repo.load_bid(bid_id)
+            if not data:
+                self._show_feedback_dialog("Selected bid not found.", Colors.RED)
+                return
+            
+            self._apply_session_data({
+                "project_data": data["project_data"],
+                "workers": data["workers"],
+                "pricing_settings": data["settings"],
+                "file_paths": {},
+                "last_exports": {},
+            })
+            self.current_bid = data["bid"]
+            self.current_bid_id = bid_id
+            self._update_bid_display()
+            self._show_feedback_dialog("Bid loaded from history.", Colors.GREEN)
+        except Exception as ex:
+            self._show_feedback_dialog(f"Error loading bid: {str(ex)[:100]}", Colors.RED)
     
     # --- FEEDBACK METHODS ---
     def _close_feedback_dialog(self, e):
