@@ -23,7 +23,7 @@ from src.database.db_connector import DBConnector
 from src.database.bid_repository import BidRepository
 from src.gui.login_screen import LoginScreen, create_login_view 
 from src.adapters.excel_loader import load_pricing_from_excel
-from src.adapters.pdf_loader import extract_project_data
+from src.adapters.pdf_loader import parse_pdf_flexible
 from src.calculator.bid_calc import BidCalculator
 from src.exporters.excel_export import ExcelBidExporter
 from src.exporters.pdf_export import PDFSubmittalExporter
@@ -1283,13 +1283,34 @@ class LightningBidApp:
             return
         
         try:
+            # Show progress indicator
             self.page.splash = ft.ProgressBar()
             self.page.update()
             
-            print(f"DEBUG: Parsing PDF at {self.pdf_file_path}")
+            # Show progress dialog for longer operations
+            progress_text = ft.Text("Parsing PDF... This may take 15-30 seconds for CAD drawings.", 
+                                   size=14, text_align=ft.TextAlign.CENTER)
+            progress_dlg = ft.AlertDialog(
+                modal=False,
+                title=ft.Text("Please Wait"),
+                content=ft.Column([
+                    progress_text,
+                    ft.ProgressBar(),
+                    ft.Text("Check the console/terminal for progress details", size=12, color=Colors.GREY_700)
+                ], tight=True, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+            )
+            self.page.dialog = progress_dlg
+            progress_dlg.open = True
+            self.page.update()
             
-            # Extract data from PDF
-            extracted_data = extract_project_data(self.pdf_file_path)
+            print(f"\n{'='*60}")
+            print(f"PARSING PDF: {self.pdf_file_path.name}")
+            print(f"{'='*60}")
+            
+            # Extract data from PDF (auto-detects CAD vs spec documents)
+            extracted_data = parse_pdf_flexible(self.pdf_file_path)
+            
+            print(f"{'='*60}\n")
             
             # Update project fields with extracted data
             if extracted_data["project_info"]["project_name"]:
@@ -1348,6 +1369,8 @@ class LightningBidApp:
                 self.corners_field.value = str(extracted_data["num_corners"])
                 self.project_data["num_corners"] = extracted_data["num_corners"]
             
+            # Close progress dialog
+            progress_dlg.open = False
             self.page.splash = None
             self._show_feedback_dialog("PDF parsed successfully!", Colors.GREEN)
             self.page.update()
@@ -1356,7 +1379,13 @@ class LightningBidApp:
             self._save_session(reason="pdf_parsed")
             
         except Exception as ex:
+            # Close progress dialog
+            if 'progress_dlg' in locals():
+                progress_dlg.open = False
             self.page.splash = None
+            
+            print(f"\n[ERROR] PDF Parsing failed: {ex}\n")
+            
             error_message = (
                 "We couldn't parse the PDF. The file may be scanned-only, "
                 "corrupted, or protected."
