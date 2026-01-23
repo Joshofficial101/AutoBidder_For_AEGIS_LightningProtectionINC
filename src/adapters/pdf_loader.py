@@ -3,7 +3,7 @@ Enhanced PDF Parser for Lightning Protection Project Specifications
 
 This module extracts structured data from various PDF document types including:
 - Text-based specification documents
-- Building plan PDFs with drawings
+- Building plan PDFs with drawings (CAD-style)
 - Scanned documents (with OCR support)
 - Tabular data and forms
 
@@ -13,6 +13,9 @@ Supports extraction of:
 - Material preferences
 - Special requirements
 - Compliance standards
+
+For CAD-style building plans with minimal text, use the advanced parser
+which includes OCR and computer vision capabilities.
 """
 
 from pathlib import Path
@@ -840,19 +843,110 @@ def extract_project_data(path: Path) -> Dict[str, Any]:
     return result
 
 
-def parse_pdf_flexible(path: Path) -> Dict[str, Any]:
+def parse_pdf_flexible(path: Path, progress_callback=None) -> Dict[str, Any]:
     """
     Flexible PDF parser that adapts to different document types.
     
     This is the recommended entry point for parsing PDFs as it:
     - Auto-detects PDF type (specification, building plan, mixed)
-    - Uses appropriate extraction strategies
-    - Returns normalized results
+    - Uses OPTIMIZED PyMuPDF-based parser for speed (1-2 seconds for CAD PDFs)
+    - Supports progress callbacks for UI updates
+    - Falls back to basic text extraction if needed
     
     Args:
         path: Path to the PDF file
+        progress_callback: Optional callback for progress updates
+            Function signature: callback(current_step, total_steps, message)
         
     Returns:
         Dictionary with extracted project data
     """
+    # Try the OPTIMIZED parser first (PyMuPDF-based, much faster)
+    try:
+        from .pdf_loader_optimized import parse_pdf_optimized
+        print(f"Using OPTIMIZED PyMuPDF parser for speed...")
+        
+        result = parse_pdf_optimized(path, progress_callback=progress_callback)
+        
+        # Normalize the result to match expected format
+        normalized = {
+            "building_dimensions": {
+                "height": result.get("building_height_ft"),
+                "area": result.get("roof_area_sqft"),
+                "perimeter": result.get("perimeter_ft"),
+                "width": result.get("width_ft"),
+                "length": result.get("length_ft")
+            },
+            "project_info": {
+                "project_name": result.get("project_name"),
+                "location": result.get("location"),
+                "address": None,
+                "city": None,
+                "state": None
+            },
+            "material_preferences": {
+                "preferred_material": None,
+                "has_metal_roof": False,
+                "material_requirements": [],
+                "roof_type": None
+            },
+            "compliance_standard": None,
+            "special_requirements": [],
+            "spec_terms": {},
+            "num_corners": result.get("num_corners", 4),
+            "soil_type": "normal",
+            "pdf_type": result.get("pdf_type", "cad_building_plan"),
+            "extraction_metadata": result.get("extraction_metadata", {})
+        }
+        return normalized
+        
+    except ImportError as e:
+        print(f"Optimized parser not available ({e}). Trying fallback...")
+    except Exception as e:
+        print(f"Optimized parser error: {e}. Trying fallback...")
+    
+    # Fallback: Try the fast parser
+    try:
+        from .pdf_loader_fast import parse_cad_fast
+        print(f"Using FAST text-only parser as fallback...")
+        result = parse_cad_fast(path)
+        
+        # Normalize the result
+        normalized = {
+            "building_dimensions": {
+                "height": result.get("building_height_ft"),
+                "area": result.get("roof_area_sqft"),
+                "perimeter": result.get("perimeter_ft"),
+                "width": result.get("width_ft"),
+                "length": result.get("length_ft")
+            },
+            "project_info": {
+                "project_name": result.get("project_name"),
+                "location": result.get("location"),
+                "address": None,
+                "city": None,
+                "state": None
+            },
+            "material_preferences": {
+                "preferred_material": None,
+                "has_metal_roof": False,
+                "material_requirements": [],
+                "roof_type": None
+            },
+            "compliance_standard": None,
+            "special_requirements": [],
+            "spec_terms": {},
+            "num_corners": result.get("num_corners", 4),
+            "soil_type": "normal",
+            "pdf_type": result.get("pdf_type", "cad_building_plan"),
+            "extraction_metadata": result.get("extraction_metadata", {})
+        }
+        return normalized
+    except ImportError:
+        pass  # Fall through to basic parser
+    except Exception:
+        pass  # Fall through to basic parser
+    
+    # Final fallback: Use standard text-based parser
+    print("Using basic text extraction as final fallback...")
     return extract_project_data(path)

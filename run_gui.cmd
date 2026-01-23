@@ -14,4 +14,4 @@ if exist .venv\Scripts\python.exe (
 )
 
 REM Deactivate the environment after the application closes
-call .venv\Scripts\deactivate.bat
+call .venv\Scripts\deactivate.batimage.png
