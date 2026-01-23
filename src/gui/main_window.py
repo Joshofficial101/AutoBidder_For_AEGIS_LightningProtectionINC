@@ -1277,42 +1277,86 @@ class LightningBidApp:
     # Compliance is now always DUAL - no need for change handler
     
     def _parse_pdf(self, e):
-        """Parse PDF and extract project data."""
+        """Parse PDF and extract project data with live progress indicator."""
         if not self.pdf_file_path or not self.pdf_file_path.exists():
             self._show_feedback_dialog("Please select a PDF file first", Colors.RED)
             return
         
-        try:
-            # Show progress indicator
-            self.page.splash = ft.ProgressBar()
-            self.page.update()
-            
-            # Show progress dialog for longer operations
-            progress_text = ft.Text("Parsing PDF... This may take 15-30 seconds for CAD drawings.", 
-                                   size=14, text_align=ft.TextAlign.CENTER)
-            progress_dlg = ft.AlertDialog(
-                modal=False,
-                title=ft.Text("Please Wait"),
+        # Create progress dialog components
+        self.pdf_progress_bar = ft.ProgressBar(width=400, value=0)
+        self.pdf_progress_text = ft.Text(
+            "Starting PDF analysis...", 
+            size=14, 
+            text_align=ft.TextAlign.CENTER
+        )
+        self.pdf_progress_percentage = ft.Text(
+            "0%", 
+            size=24, 
+            weight=FontWeight.BOLD, 
+            color=Colors.BLUE_700
+        )
+        
+        progress_dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Row([
+                ft.Icon(ft.Icons.SEARCH, color=Colors.BLUE_700),
+                ft.Text("Searching PDF", size=18, weight=FontWeight.BOLD)
+            ], spacing=10),
+            content=ft.Container(
                 content=ft.Column([
-                    progress_text,
-                    ft.ProgressBar(),
-                    ft.Text("Check the console/terminal for progress details", size=12, color=Colors.GREY_700)
-                ], tight=True, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
-            )
-            self.page.dialog = progress_dlg
-            progress_dlg.open = True
-            self.page.update()
-            
+                    self.pdf_progress_percentage,
+                    self.pdf_progress_bar,
+                    self.pdf_progress_text,
+                    ft.Text(
+                        "Using optimized PyMuPDF parser",
+                        size=12,
+                        color=Colors.GREY_600,
+                        italic=True
+                    )
+                ], 
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                spacing=15,
+                tight=True),
+                padding=20,
+                width=450
+            ),
+        )
+        
+        self.page.overlay.append(progress_dlg)
+        progress_dlg.open = True
+        self.page.update()
+        
+        def update_progress(current: int, total: int, message: str):
+            """Callback to update progress UI."""
+            try:
+                self.pdf_progress_bar.value = current / 100
+                self.pdf_progress_percentage.value = f"{current}%"
+                self.pdf_progress_text.value = message
+                self.page.update()
+            except Exception:
+                pass  # Ignore UI update errors
+        
+        try:
             print(f"\n{'='*60}")
             print(f"PARSING PDF: {self.pdf_file_path.name}")
             print(f"{'='*60}")
             
-            # Extract data from PDF (auto-detects CAD vs spec documents)
-            extracted_data = parse_pdf_flexible(self.pdf_file_path)
+            # Extract data from PDF with progress callback
+            extracted_data = parse_pdf_flexible(
+                self.pdf_file_path, 
+                progress_callback=update_progress
+            )
+            
+            # Get extraction time from metadata
+            extraction_time = extracted_data.get("extraction_metadata", {}).get(
+                "extraction_time_seconds", 0
+            )
             
             print(f"{'='*60}\n")
             
             # Update project fields with extracted data
+            dims_found = False
+            
             if extracted_data["project_info"]["project_name"]:
                 self.project_name_field.value = extracted_data["project_info"]["project_name"]
                 self.project_data["project_name"] = extracted_data["project_info"]["project_name"]
@@ -1320,7 +1364,6 @@ class LightningBidApp:
             dims = extracted_data["building_dimensions"]
             if dims["height"]:
                 self.height_field.value = str(dims["height"])
-                # Trigger validation when field is populated from PDF
                 self._validate_dimension_field(
                     str(dims["height"]),
                     "height",
@@ -1328,10 +1371,10 @@ class LightningBidApp:
                     self.height_error,
                     "building_height_ft"
                 )
+                dims_found = True
             
             if dims["area"]:
                 self.area_field.value = str(dims["area"])
-                # Trigger validation when field is populated from PDF
                 self._validate_dimension_field(
                     str(dims["area"]),
                     "area",
@@ -1339,10 +1382,10 @@ class LightningBidApp:
                     self.area_error,
                     "roof_area_sqft"
                 )
+                dims_found = True
             
             if dims["perimeter"]:
                 self.perimeter_field.value = str(dims["perimeter"])
-                # Trigger validation when field is populated from PDF
                 self._validate_dimension_field(
                     str(dims["perimeter"]),
                     "perimeter",
@@ -1350,6 +1393,7 @@ class LightningBidApp:
                     self.perimeter_error,
                     "perimeter_ft"
                 )
+                dims_found = True
             
             # Material preferences
             mat_prefs = extracted_data["material_preferences"]
@@ -1361,9 +1405,6 @@ class LightningBidApp:
                 self.metal_roof_checkbox.value = True
                 self.project_data["has_metal_roof"] = True
             
-            # Compliance standard (now always using DUAL - UL 96A + NFPA 780)
-            # No need to set since we always use both standards now
-            
             # Update corners
             if extracted_data.get("num_corners"):
                 self.corners_field.value = str(extracted_data["num_corners"])
@@ -1371,20 +1412,39 @@ class LightningBidApp:
             
             # Close progress dialog
             progress_dlg.open = False
-            self.page.splash = None
-            self._show_feedback_dialog("PDF parsed successfully!", Colors.GREEN)
             self.page.update()
             
-            # Auto-save session after successful parse (TEMP until DB migration)
+            # Show appropriate success message
+            if dims_found:
+                self._show_feedback_dialog(
+                    f"PDF parsed successfully in {extraction_time:.1f} seconds!\n"
+                    f"Dimensions extracted from {self.pdf_file_path.name}",
+                    Colors.GREEN
+                )
+            else:
+                # No dimensions found - CAD drawing with embedded graphics
+                self._show_feedback_dialog(
+                    f"PDF scanned in {extraction_time:.1f} seconds.\n\n"
+                    f"This appears to be a CAD drawing with dimensions embedded in graphics.\n"
+                    f"Please enter the building dimensions manually:\n"
+                    f"- Height, Area, Perimeter from the floor plan",
+                    Colors.AMBER_700,
+                    title="Manual Entry Needed"
+                )
+            
+            self.page.update()
+            
+            # Auto-save session after successful parse
             self._save_session(reason="pdf_parsed")
             
         except Exception as ex:
             # Close progress dialog
-            if 'progress_dlg' in locals():
-                progress_dlg.open = False
-            self.page.splash = None
+            progress_dlg.open = False
+            self.page.update()
             
             print(f"\n[ERROR] PDF Parsing failed: {ex}\n")
+            import traceback
+            traceback.print_exc()
             
             error_message = (
                 "We couldn't parse the PDF. The file may be scanned-only, "
