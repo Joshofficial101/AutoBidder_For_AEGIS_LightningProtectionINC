@@ -77,6 +77,10 @@ class DBConnector:
         final_amount REAL,
         material_total REAL,
         labor_total REAL,
+        status TEXT DEFAULT 'draft',
+        date_sent TEXT,
+        date_responded TEXT,
+        follow_up_date TEXT,
         FOREIGN KEY (user_id) REFERENCES Users (user_id),
         FOREIGN KEY (project_id) REFERENCES Projects (project_id) ON DELETE CASCADE
     );
@@ -144,6 +148,75 @@ class DBConnector:
         updated_at TEXT NOT NULL,
         FOREIGN KEY (user_id) REFERENCES Users (user_id) ON DELETE CASCADE
     );
+    
+    -- Job Management Tables (Phase 1)
+    -- Track job lifecycle from bid acceptance to completion
+    CREATE TABLE IF NOT EXISTS Jobs (
+        job_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        bid_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        status TEXT NOT NULL DEFAULT 'scheduled',
+        scheduled_date TEXT,
+        start_date TEXT,
+        completion_date TEXT,
+        assigned_crew TEXT,
+        notes TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (bid_id) REFERENCES Bids (bid_id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES Users (user_id)
+    );
+    
+    -- Job photos and documents storage tracking
+    CREATE TABLE IF NOT EXISTS JobDocuments (
+        document_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_id INTEGER NOT NULL,
+        document_type TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        tag TEXT,
+        uploaded_at TEXT NOT NULL,
+        FOREIGN KEY (job_id) REFERENCES Jobs (job_id) ON DELETE CASCADE
+    );
+    
+    -- Job activity log for audit trail and timeline
+    CREATE TABLE IF NOT EXISTS JobActivity (
+        activity_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        activity_type TEXT NOT NULL,
+        description TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (job_id) REFERENCES Jobs (job_id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES Users (user_id)
+    );
+    
+    -- Financial tracking for completed jobs (Phase 3)
+    CREATE TABLE IF NOT EXISTS JobFinancials (
+        financial_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_id INTEGER NOT NULL,
+        bid_amount REAL NOT NULL,
+        estimated_materials REAL NOT NULL,
+        estimated_labor_hours REAL NOT NULL,
+        estimated_labor_cost REAL NOT NULL,
+        actual_materials_cost REAL,
+        actual_labor_hours REAL,
+        actual_labor_cost REAL,
+        overhead_cost REAL,
+        tools_rental_cost REAL,
+        shipping_cost REAL,
+        tax_amount REAL,
+        commission_amount REAL,
+        other_costs REAL,
+        payment_status TEXT DEFAULT 'unpaid',
+        amount_paid REAL DEFAULT 0,
+        payment_date TEXT,
+        total_costs REAL,
+        net_profit REAL,
+        profit_margin_pct REAL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (job_id) REFERENCES Jobs (job_id) ON DELETE CASCADE
+    );
     """
 
     def __init__(self):
@@ -203,6 +276,17 @@ class DBConnector:
                 )
                 self._cursor.execute("PRAGMA foreign_keys = ON;")
                 self._connection.commit()
+            
+            # --- Schema migration: Add status tracking to Bids table ---
+            bid_columns = [row[1] for row in self._cursor.execute("PRAGMA table_info(Bids);")]
+            if "status" not in bid_columns:
+                print("Migrating Bids table to add status tracking...")
+                self._cursor.execute("ALTER TABLE Bids ADD COLUMN status TEXT DEFAULT 'draft';")
+                self._cursor.execute("ALTER TABLE Bids ADD COLUMN date_sent TEXT;")
+                self._cursor.execute("ALTER TABLE Bids ADD COLUMN date_responded TEXT;")
+                self._cursor.execute("ALTER TABLE Bids ADD COLUMN follow_up_date TEXT;")
+                self._connection.commit()
+                print("Bids table migration complete.")
             
         except sqlite3.Error as e:
             print(f"Database error during initialization: {e}")

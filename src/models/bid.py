@@ -62,6 +62,12 @@ class Bid(BaseModel):
     This is the final output that gets turned into Excel + PDF.
     """
     project_name: str
+    
+    # Status tracking (Phase 1: Job Management)
+    status: str = "draft"  # draft | sent | accepted | rejected | expired
+    date_sent: Optional[str] = None
+    date_responded: Optional[str] = None
+    follow_up_date: Optional[str] = None
 
     # Organized sections of the bid
     sections: List[BidSection] = Field(default_factory=list)

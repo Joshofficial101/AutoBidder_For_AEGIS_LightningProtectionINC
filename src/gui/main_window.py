@@ -7,7 +7,7 @@ bidding workflow through a user-friendly graphical interface.
 
 import flet as ft
 import json
-from datetime import datetime
+from datetime import datetime, date
 from pathlib import Path
 from typing import Optional, Dict, Any
 # FIX: Explicitly import all constant classes for Windows compatibility
@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.database.db_connector import DBConnector 
 from src.database.bid_repository import BidRepository
+from src.database.job_repository import JobRepository
 from src.gui.login_screen import LoginScreen, create_login_view 
 from src.adapters.excel_loader import load_pricing_from_excel
 from src.adapters.pdf_loader import parse_pdf_flexible
@@ -51,7 +52,7 @@ class LightningBidApp:
 
         # Main layout state (enterprise shell)
         self.nav_collapsed = False
-        self.active_module = "bidding"
+        self.active_module = "dashboard"
         self.nav_items = []
         self.nav_rail: Optional[ft.NavigationRail] = None
         self.left_nav_container: Optional[ft.Container] = None
@@ -63,6 +64,7 @@ class LightningBidApp:
         # NOTE: Repository layer is a temporary local DB adapter.
         # This will be swapped to a SaaS API client later without changing GUI code.
         self.repo = BidRepository(self.db) if self.db else None
+        self.job_repo = JobRepository(self.db) if self.db else None
         self.current_user_id: Optional[int] = None
         # ----------------------------------------
         
@@ -389,20 +391,21 @@ class LightningBidApp:
             {"key": "dashboard", "label": "Dashboard", "icon": ft.Icons.DASHBOARD},
             {"key": "projects", "label": "Projects", "icon": ft.Icons.FOLDER},
             {"key": "bidding", "label": "Bidding", "icon": ft.Icons.REQUEST_QUOTE},
+            {"key": "jobs", "label": "Jobs", "icon": ft.Icons.WORK},
+            {"key": "calendar", "label": "Calendar", "icon": ft.Icons.CALENDAR_MONTH},
             {"key": "reports", "label": "Reports", "icon": ft.Icons.ASSESSMENT},
         ]
 
         # Build module views once to preserve control state
         self.module_views = {
-            "dashboard": self._build_placeholder_view(
-                "Dashboard",
-                "Company overview, KPIs, and recent activity will appear here."
-            ),
+            "dashboard": self._build_dashboard_view(),
             "projects": self._build_placeholder_view(
                 "Projects",
                 "Project lists, filtering, and collaboration tools will appear here."
             ),
             "bidding": self._build_bidding_view(),
+            "jobs": self._build_jobs_view(),
+            "calendar": self._build_calendar_view(),
             "reports": self._build_placeholder_view(
                 "Reports",
                 "Reporting, exports, and analytics will appear here."
@@ -536,12 +539,14 @@ class LightningBidApp:
             "dashboard": "Dashboard",
             "projects": "Projects",
             "bidding": "Bidding Workspace",
+            "jobs": "Job Management",
             "reports": "Reports",
         }
         module_tabs = {
             "dashboard": ["Overview", "Insights"],
             "projects": ["Directory", "Connections"],
             "bidding": ["Overview", "Workflow"],
+            "jobs": ["Active Jobs", "Calendar"],
             "reports": ["Summary", "Exports"],
         }
         title = module_titles.get(module_key, "Workspace")
@@ -588,6 +593,1786 @@ class LightningBidApp:
             expand=True
         )
 
+    def _build_jobs_view(self) -> ft.Control:
+        """Build the jobs management dashboard with Kanban-style status columns."""
+        if not self.current_user_id or not self.job_repo:
+            return self._build_placeholder_view("Jobs", "Please log in to view jobs.")
+        
+        # Get all active jobs
+        try:
+            active_jobs = self.job_repo.get_active_jobs(self.current_user_id)
+            
+            # Group jobs by status
+            jobs_by_status = {
+                "awaiting_approval": [],
+                "scheduled": [],
+                "in_progress": [],
+                "inspection": [],
+                "completed": []
+            }
+            
+            for job in active_jobs:
+                if job.status in jobs_by_status:
+                    jobs_by_status[job.status].append(job)
+            
+            # Build status columns
+            columns = []
+            status_config = [
+                ("awaiting_approval", "Awaiting Approval", Colors.AMBER_500),
+                ("scheduled", "Scheduled", Colors.BLUE_500),
+                ("in_progress", "In Progress", Colors.ORANGE_500),
+                ("inspection", "Inspection", Colors.PURPLE_500),
+                ("completed", "Completed", Colors.GREEN_500)
+            ]
+            
+            for status_key, status_label, status_color in status_config:
+                job_cards = []
+                for job in jobs_by_status[status_key]:
+                    job_cards.append(self._build_job_card(job))
+                
+                if not job_cards:
+                    job_cards = [ft.Container(
+                        content=ft.Text("No jobs", size=12, color=Colors.GREY_400),
+                        padding=10
+                    )]
+                
+                column = ft.Container(
+                    content=ft.Column([
+                        ft.Container(
+                            content=ft.Row([
+                                ft.Container(
+                                    width=4,
+                                    height=20,
+                                    bgcolor=status_color,
+                                    border_radius=2
+                                ),
+                                ft.Text(
+                                    status_label,
+                                    size=14,
+                                    weight=FontWeight.BOLD,
+                                    color=Colors.GREY_800
+                                ),
+                                ft.Container(
+                                    content=ft.Text(
+                                        str(len(jobs_by_status[status_key])),
+                                        size=12,
+                                        color=Colors.WHITE
+                                    ),
+                                    bgcolor=status_color,
+                                    padding=ft.padding.symmetric(horizontal=8, vertical=2),
+                                    border_radius=10
+                                )
+                            ], spacing=8),
+                            padding=ft.padding.only(bottom=12)
+                        ),
+                        ft.Column(job_cards, spacing=8, scroll=ScrollMode.AUTO)
+                    ], spacing=0),
+                    padding=16,
+                    bgcolor=Colors.GREY_50,
+                    border_radius=8,
+                    expand=True
+                )
+                columns.append(column)
+            
+            # Header with actions
+            header = ft.Container(
+                content=ft.Row([
+                    ft.Text("Active Jobs", size=20, weight=FontWeight.BOLD),
+                    ft.Container(expand=True),
+                    ft.ElevatedButton(
+                        "View All Jobs",
+                        icon=ft.Icons.LIST,
+                        on_click=self._show_all_jobs_list
+                    )
+                ]),
+                padding=ft.padding.only(bottom=16)
+            )
+            
+            return ft.Container(
+                content=ft.Column([
+                    header,
+                    ft.Row(columns, spacing=16, expand=True, scroll=ScrollMode.AUTO)
+                ], spacing=0, expand=True),
+                expand=True
+            )
+            
+        except Exception as e:
+            return self._build_placeholder_view(
+                "Error Loading Jobs",
+                f"An error occurred: {str(e)}"
+            )
+    
+    def _build_calendar_view(self) -> ft.Control:
+        """Build the calendar view for job scheduling and visualization."""
+        if not self.current_user_id or not self.job_repo:
+            return self._build_placeholder_view("Calendar", "Please log in to view the calendar.")
+        
+        # Import calendar component
+        from src.gui.components.calendar_view import CalendarView
+        from datetime import date, timedelta
+        
+        # Create calendar component
+        calendar = CalendarView(
+            on_date_click=self._on_calendar_date_click,
+            on_job_click=self._on_calendar_job_click
+        )
+        
+        # Load jobs for the current month
+        try:
+            # Get date range for current month
+            today = date.today()
+            first_day = date(today.year, today.month, 1)
+            
+            # Get last day of month
+            if today.month == 12:
+                last_day = date(today.year + 1, 1, 1) - timedelta(days=1)
+            else:
+                last_day = date(today.year, today.month + 1, 1) - timedelta(days=1)
+            
+            # Fetch jobs
+            jobs = self.job_repo.get_jobs_by_date_range(
+                self.current_user_id,
+                first_day.strftime("%Y-%m-%d"),
+                last_day.strftime("%Y-%m-%d")
+            )
+            
+            calendar.set_jobs(jobs)
+            
+        except Exception as e:
+            print(f"Error loading calendar jobs: {e}")
+        
+        # Build and return calendar
+        return calendar.build()
+    
+    def _on_calendar_date_click(self, selected_date: date):
+        """Handle date click in calendar - open job creation dialog."""
+        # Format date for dialog
+        date_str = selected_date.strftime("%Y-%m-%d")
+        
+        # Show dialog to create new job or view jobs on this date
+        from datetime import date as date_class
+        jobs_on_date = []
+        
+        try:
+            if self.job_repo:
+                jobs_on_date = self.job_repo.get_jobs_by_date(
+                    self.current_user_id,
+                    date_str
+                )
+        except Exception as e:
+            print(f"Error fetching jobs for date: {e}")
+        
+        # If there are jobs, show them; otherwise offer to create one
+        if jobs_on_date:
+            self._show_date_jobs_dialog(selected_date, jobs_on_date)
+        else:
+            self._show_feedback_dialog(
+                f"No jobs scheduled for {selected_date.strftime('%B %d, %Y')}",
+                Colors.BLUE_500,
+                "Calendar"
+            )
+    
+    def _on_calendar_job_click(self, job):
+        """Handle job card click in calendar - show job details."""
+        self._show_job_details(job)
+    
+    def _show_date_jobs_dialog(self, selected_date: date, jobs: list):
+        """Show dialog with all jobs on a specific date."""
+        job_list_items = []
+        
+        for job in jobs:
+            job_list_items.append(
+                ft.ListTile(
+                    leading=ft.Icon(ft.Icons.WORK, color=Colors.BLUE_500),
+                    title=ft.Text(job.project_name or f"Job #{job.job_id}"),
+                    subtitle=ft.Text(f"Status: {job.status_display}"),
+                    trailing=ft.Text(f"${job.bid_amount:,.2f}" if job.bid_amount else ""),
+                    on_click=lambda e, j=job: self._on_date_job_selected(e, j)
+                )
+            )
+        
+        dialog = ft.AlertDialog(
+            title=ft.Text(f"Jobs on {selected_date.strftime('%B %d, %Y')}"),
+            content=ft.Container(
+                content=ft.Column(job_list_items, spacing=0, scroll=ScrollMode.AUTO),
+                width=500,
+                height=400
+            ),
+            actions=[
+                ft.TextButton("Close", on_click=lambda e: self._close_dialog())
+            ]
+        )
+        
+        self.page.dialog = dialog
+        dialog.open = True
+        self.page.update()
+    
+    def _on_date_job_selected(self, e, job):
+        """Handle selection of a job from the date jobs dialog."""
+        # Close the current dialog
+        if self.page.dialog:
+            self.page.dialog.open = False
+            self.page.update()
+        
+        # Show job details
+        self._show_job_details(job)
+    
+    def _close_dialog(self):
+        """Close the currently open dialog."""
+        if self.page.dialog:
+            self.page.dialog.open = False
+            self.page.update()
+    
+    def _build_job_card(self, job) -> ft.Container:
+        """Build a card for displaying a job in the Kanban board."""
+        # Format scheduled date
+        scheduled_display = "Not scheduled"
+        if job.scheduled_date:
+            try:
+                from datetime import datetime
+                date_obj = datetime.fromisoformat(job.scheduled_date)
+                scheduled_display = date_obj.strftime("%b %d, %Y")
+            except:
+                scheduled_display = job.scheduled_date
+        
+        # Get crew info
+        crew_display = "No crew assigned"
+        crew_list = job.crew_list
+        if crew_list:
+            crew_display = ", ".join(crew_list[:2])
+            if len(crew_list) > 2:
+                crew_display += f" +{len(crew_list) - 2} more"
+        
+        # Build card
+        return ft.Container(
+            content=ft.Column([
+                ft.Text(
+                    job.project_name or f"Job #{job.job_id}",
+                    size=13,
+                    weight=FontWeight.BOLD,
+                    color=Colors.GREY_900
+                ),
+                ft.Row([
+                    ft.Icon(ft.Icons.CALENDAR_TODAY, size=12, color=Colors.GREY_500),
+                    ft.Text(scheduled_display, size=11, color=Colors.GREY_600)
+                ], spacing=4),
+                ft.Row([
+                    ft.Icon(ft.Icons.PEOPLE, size=12, color=Colors.GREY_500),
+                    ft.Text(crew_display, size=11, color=Colors.GREY_600)
+                ], spacing=4),
+                ft.Row([
+                    ft.Icon(ft.Icons.ATTACH_MONEY, size=12, color=Colors.GREY_500),
+                    ft.Text(
+                        f"${job.bid_amount:,.2f}" if job.bid_amount else "N/A",
+                        size=11,
+                        color=Colors.GREY_600
+                    )
+                ], spacing=4),
+                ft.Divider(height=1, color=Colors.GREY_300),
+                # Show Approve button for awaiting approval jobs
+                ft.ElevatedButton(
+                    "✓ Approve & Schedule",
+                    icon=ft.Icons.CHECK_CIRCLE,
+                    bgcolor=Colors.GREEN_500,
+                    color=Colors.WHITE,
+                    on_click=lambda e, j=job: self._show_approve_job_dialog(j),
+                    expand=True
+                ) if job.status == "awaiting_approval" else ft.Row([
+                    ft.TextButton(
+                        "View Details",
+                        on_click=lambda e, j=job: self._show_job_details(j),
+                        style=ft.ButtonStyle(padding=0)
+                    ),
+                    ft.Container(expand=True),
+                    ft.IconButton(
+                        icon=ft.Icons.MORE_VERT,
+                        icon_size=16,
+                        on_click=lambda e, j=job: self._show_job_actions(j)
+                    )
+                ], spacing=0)
+            ], spacing=6),
+            padding=12,
+            bgcolor=Colors.WHITE,
+            border=ft.border.all(1, Colors.GREY_300),
+            border_radius=8
+        )
+    
+    def _show_approve_job_dialog(self, job):
+        """Show dialog to approve a job and set scheduled date."""
+        from datetime import datetime, date
+        
+        # Date field for scheduled date
+        scheduled_date_field = ft.TextField(
+            label="Scheduled Date (YYYY-MM-DD)",
+            hint_text="2024-01-15",
+            width=300,
+            autofocus=True
+        )
+        
+        # Notes field
+        notes_field = ft.TextField(
+            label="Notes (optional)",
+            multiline=True,
+            min_lines=2,
+            max_lines=4,
+            width=300
+        )
+        
+        def approve_job(e):
+            if not scheduled_date_field.value:
+                self._show_feedback_dialog("Please enter a scheduled date", Colors.RED, "Error")
+                return
+            
+            if self.job_repo and self.current_user_id:
+                try:
+                    # Update job status to scheduled and set date
+                    self.job_repo.update_job_status(
+                        job.job_id,
+                        self.current_user_id,
+                        "scheduled",
+                        notes_field.value or "Job approved and scheduled"
+                    )
+                    
+                    # Update scheduled date
+                    self.job_repo.update_job_dates(
+                        job.job_id,
+                        scheduled_date=scheduled_date_field.value
+                    )
+                    
+                    dialog.open = False
+                    
+                    # Refresh views
+                    self.module_views["jobs"] = self._build_jobs_view()
+                    self.module_views["calendar"] = self._build_calendar_view()
+                    self.module_views["dashboard"] = self._build_dashboard_view()
+                    
+                    if self.active_module in ["jobs", "calendar", "dashboard"]:
+                        self._set_active_module(self.active_module)
+                    
+                    self._show_feedback_dialog(
+                        f"Job approved and scheduled for {scheduled_date_field.value}",
+                        Colors.GREEN,
+                        "Success"
+                    )
+                except Exception as ex:
+                    self._show_feedback_dialog(f"Error approving job: {str(ex)}", Colors.RED, "Error")
+            
+            self.page.update()
+        
+        def cancel(e):
+            dialog.open = False
+            self.page.update()
+        
+        dialog = ft.AlertDialog(
+            title=ft.Text(f"Approve Job: {job.project_name}"),
+            content=ft.Column([
+                ft.Container(
+                    content=ft.Row([
+                        ft.Icon(ft.Icons.INFO_OUTLINE, size=20, color=Colors.BLUE_500),
+                        ft.Text(
+                            "Approving this job will move it to 'Scheduled' status\nand add it to the calendar.",
+                            size=12,
+                            color=Colors.GREY_600
+                        )
+                    ], spacing=8),
+                    padding=ft.padding.only(bottom=12),
+                    bgcolor=Colors.BLUE_50,
+                    border_radius=8,
+                    padding_all=12
+                ),
+                scheduled_date_field,
+                notes_field,
+                ft.Container(
+                    content=ft.Column([
+                        ft.Text("Job Details:", size=12, weight=FontWeight.BOLD),
+                        ft.Text(f"• Bid Amount: ${job.bid_amount:,.2f}" if job.bid_amount else "• Bid Amount: N/A", size=11, color=Colors.GREY_600),
+                        ft.Text(f"• Crew: {', '.join(job.crew_list)}" if job.crew_list else "• Crew: Not assigned", size=11, color=Colors.GREY_600)
+                    ], spacing=4),
+                    padding=ft.padding.only(top=8)
+                )
+            ], spacing=12, tight=True),
+            actions=[
+                ft.TextButton("Cancel", on_click=cancel),
+                ft.ElevatedButton(
+                    "Approve & Schedule",
+                    icon=ft.Icons.CHECK_CIRCLE,
+                    bgcolor=Colors.GREEN_500,
+                    color=Colors.WHITE,
+                    on_click=approve_job
+                )
+            ],
+            modal=True
+        )
+        
+        self.page.overlay.append(dialog)
+        dialog.open = True
+        self.page.update()
+    
+    def _show_all_jobs_list(self, e):
+        """Show all jobs in a list view."""
+        # Placeholder - will be implemented in job details
+        self._show_feedback_dialog("List view coming soon!", Colors.BLUE, "Info")
+    
+    def _show_job_details(self, job):
+        """Show detailed view of a job."""
+        if not self.job_repo:
+            return
+        
+        # Reload job with full details
+        full_job = self.job_repo.get_job(job.job_id)
+        if not full_job:
+            self._show_feedback_dialog("Job not found", Colors.RED, "Error")
+            return
+        
+        # Format dates
+        def format_date(date_str):
+            if not date_str:
+                return "Not set"
+            try:
+                from datetime import datetime
+                date_obj = datetime.fromisoformat(date_str)
+                return date_obj.strftime("%B %d, %Y")
+            except:
+                return date_str
+        
+        # Status badge color
+        status_colors = {
+            "scheduled": Colors.BLUE_500,
+            "in_progress": Colors.ORANGE_500,
+            "inspection": Colors.PURPLE_500,
+            "completed": Colors.GREEN_500,
+            "invoiced": Colors.TEAL_500
+        }
+        status_color = status_colors.get(full_job.status, Colors.GREY_500)
+        
+        # Build job info section
+        job_info = ft.Container(
+            content=ft.Column([
+                ft.Row([
+                    ft.Text("Job Information", size=16, weight=FontWeight.BOLD),
+                    ft.Container(expand=True),
+                    ft.Container(
+                        content=ft.Text(
+                            full_job.status_display,
+                            color=Colors.WHITE,
+                            size=12
+                        ),
+                        bgcolor=status_color,
+                        padding=ft.padding.symmetric(horizontal=12, vertical=4),
+                        border_radius=12
+                    )
+                ]),
+                ft.Divider(height=1),
+                ft.Row([
+                    ft.Icon(ft.Icons.BUSINESS, size=16, color=Colors.GREY_600),
+                    ft.Text(f"Project: {full_job.project_name}", size=13)
+                ], spacing=8),
+                ft.Row([
+                    ft.Icon(ft.Icons.CALENDAR_TODAY, size=16, color=Colors.GREY_600),
+                    ft.Text(f"Scheduled: {format_date(full_job.scheduled_date)}", size=13)
+                ], spacing=8),
+                ft.Row([
+                    ft.Icon(ft.Icons.PLAY_CIRCLE, size=16, color=Colors.GREY_600),
+                    ft.Text(f"Started: {format_date(full_job.start_date)}", size=13)
+                ], spacing=8),
+                ft.Row([
+                    ft.Icon(ft.Icons.CHECK_CIRCLE, size=16, color=Colors.GREY_600),
+                    ft.Text(f"Completed: {format_date(full_job.completion_date)}", size=13)
+                ], spacing=8),
+                ft.Row([
+                    ft.Icon(ft.Icons.ATTACH_MONEY, size=16, color=Colors.GREY_600),
+                    ft.Text(
+                        f"Bid Amount: ${full_job.bid_amount:,.2f}" if full_job.bid_amount else "N/A",
+                        size=13
+                    )
+                ], spacing=8)
+            ], spacing=8),
+            padding=16,
+            bgcolor=Colors.GREY_50,
+            border_radius=8
+        )
+        
+        # Crew section
+        crew_list = full_job.crew_list
+        crew_display = "No crew assigned"
+        if crew_list:
+            crew_display = "\n".join([f"• {name}" for name in crew_list])
+        
+        def assign_crew(e):
+            self._show_assign_crew_dialog(full_job)
+            close_dialog(e)
+        
+        crew_section = ft.Container(
+            content=ft.Column([
+                ft.Row([
+                    ft.Text("Assigned Crew", size=14, weight=FontWeight.BOLD),
+                    ft.Container(expand=True),
+                    ft.IconButton(
+                        icon=ft.Icons.EDIT,
+                        icon_size=16,
+                        tooltip="Assign Crew",
+                        on_click=assign_crew
+                    )
+                ]),
+                ft.Divider(height=1),
+                ft.Text(crew_display, size=12, color=Colors.GREY_700)
+            ], spacing=8),
+            padding=16,
+            bgcolor=Colors.GREY_50,
+            border_radius=8
+        )
+        
+        # Notes section
+        notes_display = full_job.notes or "No notes"
+        notes_section = ft.Container(
+            content=ft.Column([
+                ft.Text("Notes", size=14, weight=FontWeight.BOLD),
+                ft.Divider(height=1),
+                ft.Text(notes_display, size=12, color=Colors.GREY_700)
+            ], spacing=8),
+            padding=16,
+            bgcolor=Colors.GREY_50,
+            border_radius=8
+        )
+        
+        # Documents section
+        docs_list = []
+        if full_job.documents:
+            for doc in full_job.documents[:5]:  # Show first 5
+                docs_list.append(ft.Row([
+                    ft.Icon(ft.Icons.ATTACH_FILE, size=14, color=Colors.GREY_600),
+                    ft.Text(doc.tag or doc.document_type, size=11),
+                    ft.Container(expand=True),
+                    ft.Text(doc.uploaded_at[:10] if doc.uploaded_at else "", size=10, color=Colors.GREY_500)
+                ], spacing=4))
+        else:
+            docs_list = [ft.Text("No documents uploaded", size=12, color=Colors.GREY_500)]
+        
+        documents_section = ft.Container(
+            content=ft.Column([
+                ft.Row([
+                    ft.Text("Documents & Photos", size=14, weight=FontWeight.BOLD),
+                    ft.Container(expand=True),
+                    ft.TextButton(
+                        "Upload",
+                        icon=ft.Icons.UPLOAD_FILE,
+                        on_click=lambda e, j=full_job: self._upload_job_document(j),
+                        style=ft.ButtonStyle(padding=0)
+                    )
+                ]),
+                ft.Divider(height=1),
+                ft.Column(docs_list, spacing=4)
+            ], spacing=8),
+            padding=16,
+            bgcolor=Colors.GREY_50,
+            border_radius=8
+        )
+        
+        # Activity timeline
+        activity_items = []
+        for activity in full_job.activities[:5]:  # Show first 5
+            activity_items.append(ft.Row([
+                ft.Container(
+                    width=8,
+                    height=8,
+                    bgcolor=Colors.BLUE_500,
+                    border_radius=4
+                ),
+                ft.Column([
+                    ft.Text(activity.description or activity.activity_type, size=11),
+                    ft.Text(
+                        activity.created_at[:16] if activity.created_at else "",
+                        size=9,
+                        color=Colors.GREY_500
+                    )
+                ], spacing=2, expand=True)
+            ], spacing=8))
+        
+        if not activity_items:
+            activity_items = [ft.Text("No activity yet", size=12, color=Colors.GREY_500)]
+        
+        activity_section = ft.Container(
+            content=ft.Column([
+                ft.Text("Activity Timeline", size=14, weight=FontWeight.BOLD),
+                ft.Divider(height=1),
+                ft.Column(activity_items, spacing=8)
+            ], spacing=8),
+            padding=16,
+            bgcolor=Colors.GREY_50,
+            border_radius=8
+        )
+        
+        # Action buttons
+        def close_dialog(e):
+            dialog.open = False
+            self.page.update()
+        
+        def update_status(e):
+            self._show_update_job_status_dialog(full_job)
+            close_dialog(e)
+        
+        def add_note(e):
+            self._show_add_note_dialog(full_job)
+            close_dialog(e)
+        
+        def mark_complete(e):
+            self._show_job_completion_checklist(full_job)
+            close_dialog(e)
+        
+        def reschedule(e):
+            self._show_reschedule_dialog(full_job)
+            close_dialog(e)
+        
+        actions = ft.Row([
+            ft.TextButton("Close", on_click=close_dialog),
+            ft.Container(expand=True),
+            ft.ElevatedButton("Reschedule", icon=ft.Icons.CALENDAR_MONTH, on_click=reschedule),
+            ft.ElevatedButton("Add Note", icon=ft.Icons.NOTE_ADD, on_click=add_note),
+            ft.ElevatedButton("Update Status", icon=ft.Icons.UPDATE, on_click=update_status),
+            ft.ElevatedButton(
+                "Mark Complete",
+                icon=ft.Icons.CHECK_CIRCLE,
+                bgcolor=Colors.GREEN_600,
+                color=Colors.WHITE,
+                on_click=mark_complete
+            ) if full_job.status in ["in_progress", "inspection"] else ft.Container()
+        ])
+        
+        # Build dialog content
+        content = ft.Container(
+            content=ft.Column([
+                job_info,
+                ft.Row([crew_section, notes_section], spacing=12, expand=True),
+                documents_section,
+                activity_section,
+                actions
+            ], spacing=12, scroll=ScrollMode.AUTO),
+            width=800,
+            height=600,
+            padding=20
+        )
+        
+        dialog = ft.AlertDialog(
+            title=ft.Text(f"Job Details: {full_job.project_name}"),
+            content=content,
+            modal=True
+        )
+        
+        self.page.overlay.append(dialog)
+        dialog.open = True
+        self.page.update()
+    
+    def _show_reschedule_dialog(self, job):
+        """Show dialog to reschedule a job."""
+        from datetime import datetime, date
+        
+        # Parse current scheduled date
+        current_date_str = ""
+        if job.scheduled_date:
+            try:
+                current_date = datetime.fromisoformat(job.scheduled_date).date()
+                current_date_str = current_date.strftime("%Y-%m-%d")
+            except:
+                current_date_str = job.scheduled_date[:10]
+        
+        # Date picker (using text field for now - Flet doesn't have a built-in date picker)
+        scheduled_date_field = ft.TextField(
+            label="Scheduled Date (YYYY-MM-DD)",
+            value=current_date_str,
+            hint_text="2024-01-15",
+            width=300
+        )
+        
+        start_date_str = ""
+        if job.start_date:
+            try:
+                start_date = datetime.fromisoformat(job.start_date).date()
+                start_date_str = start_date.strftime("%Y-%m-%d")
+            except:
+                start_date_str = job.start_date[:10]
+        
+        start_date_field = ft.TextField(
+            label="Start Date (YYYY-MM-DD)",
+            value=start_date_str,
+            hint_text="2024-01-15",
+            width=300
+        )
+        
+        completion_date_str = ""
+        if job.completion_date:
+            try:
+                completion_date = datetime.fromisoformat(job.completion_date).date()
+                completion_date_str = completion_date.strftime("%Y-%m-%d")
+            except:
+                completion_date_str = job.completion_date[:10]
+        
+        completion_date_field = ft.TextField(
+            label="Completion Date (YYYY-MM-DD)",
+            value=completion_date_str,
+            hint_text="2024-01-20",
+            width=300
+        )
+        
+        def save_dates(e):
+            if self.job_repo:
+                try:
+                    # Update job dates
+                    self.job_repo.update_job_dates(
+                        job.job_id,
+                        scheduled_date=scheduled_date_field.value or None,
+                        start_date=start_date_field.value or None,
+                        completion_date=completion_date_field.value or None
+                    )
+                    
+                    dialog.open = False
+                    
+                    # Refresh calendar and jobs view
+                    self.module_views["calendar"] = self._build_calendar_view()
+                    self.module_views["jobs"] = self._build_jobs_view()
+                    if self.active_module in ["calendar", "jobs"]:
+                        self._set_active_module(self.active_module)
+                    
+                    self._show_feedback_dialog("Job rescheduled successfully", Colors.GREEN, "Success")
+                except Exception as ex:
+                    self._show_feedback_dialog(f"Error rescheduling job: {str(ex)}", Colors.RED, "Error")
+            
+            self.page.update()
+        
+        def cancel(e):
+            dialog.open = False
+            self.page.update()
+        
+        dialog = ft.AlertDialog(
+            title=ft.Text(f"Reschedule Job: {job.project_name}"),
+            content=ft.Column([
+                ft.Text("Update job timeline dates:", size=13, color=Colors.GREY_600),
+                scheduled_date_field,
+                start_date_field,
+                completion_date_field,
+                ft.Container(
+                    content=ft.Text(
+                        "💡 Tip: Leave fields empty to clear dates",
+                        size=11,
+                        color=Colors.GREY_500,
+                        italic=True
+                    ),
+                    padding=ft.padding.only(top=8)
+                )
+            ], spacing=12, tight=True),
+            actions=[
+                ft.TextButton("Cancel", on_click=cancel),
+                ft.ElevatedButton("Save", icon=ft.Icons.SAVE, on_click=save_dates)
+            ],
+            modal=True
+        )
+        
+        self.page.overlay.append(dialog)
+        dialog.open = True
+        self.page.update()
+    
+    def _show_update_job_status_dialog(self, job):
+        """Show dialog to update job status."""
+        status_options = [
+            "awaiting_approval",
+            "scheduled",
+            "in_progress",
+            "inspection",
+            "completed",
+            "invoiced"
+        ]
+        
+        status_dropdown = ft.Dropdown(
+            label="New Status",
+            value=job.status,
+            options=[ft.dropdown.Option(s, s.replace("_", " ").title()) for s in status_options],
+            width=300
+        )
+        
+        note_field = ft.TextField(
+            label="Note (optional)",
+            multiline=True,
+            min_lines=2,
+            max_lines=4,
+            width=300
+        )
+        
+        def save_status(e):
+            if self.job_repo and self.current_user_id:
+                self.job_repo.update_job_status(
+                    job.job_id,
+                    self.current_user_id,
+                    status_dropdown.value,
+                    note_field.value or None
+                )
+                dialog.open = False
+                # Refresh jobs view
+                self.module_views["jobs"] = self._build_jobs_view()
+                if self.active_module == "jobs":
+                    self._set_active_module("jobs")
+                self._show_feedback_dialog("Job status updated", Colors.GREEN, "Success")
+            self.page.update()
+        
+        def cancel(e):
+            dialog.open = False
+            self.page.update()
+        
+        dialog = ft.AlertDialog(
+            title=ft.Text("Update Job Status"),
+            content=ft.Column([status_dropdown, note_field], spacing=12, tight=True),
+            actions=[
+                ft.TextButton("Cancel", on_click=cancel),
+                ft.ElevatedButton("Save", on_click=save_status)
+            ],
+            modal=True
+        )
+        
+        self.page.overlay.append(dialog)
+        dialog.open = True
+        self.page.update()
+    
+    def _show_add_note_dialog(self, job):
+        """Show dialog to add a note to a job."""
+        note_field = ft.TextField(
+            label="Note",
+            multiline=True,
+            min_lines=3,
+            max_lines=6,
+            width=400
+        )
+        
+        def save_note(e):
+            if self.job_repo and self.current_user_id and note_field.value:
+                self.job_repo.add_note(job.job_id, self.current_user_id, note_field.value)
+                dialog.open = False
+                self._show_feedback_dialog("Note added", Colors.GREEN, "Success")
+            self.page.update()
+        
+        def cancel(e):
+            dialog.open = False
+            self.page.update()
+        
+        dialog = ft.AlertDialog(
+            title=ft.Text("Add Note"),
+            content=note_field,
+            actions=[
+                ft.TextButton("Cancel", on_click=cancel),
+                ft.ElevatedButton("Save", on_click=save_note)
+            ],
+            modal=True
+        )
+        
+        self.page.overlay.append(dialog)
+        dialog.open = True
+        self.page.update()
+    
+    def _show_assign_crew_dialog(self, job):
+        """Show dialog to assign crew members to a job."""
+        current_crew = set(job.crew_list)
+        
+        # Worker selection checkboxes
+        worker_checks = []
+        for worker in self.workers:
+            cb = ft.Checkbox(
+                label=worker["name"],
+                value=worker["name"] in current_crew
+            )
+            worker_checks.append(cb)
+        
+        def save_crew(e):
+            if self.job_repo and self.current_user_id:
+                # Get selected crew members
+                selected_crew = [cb.label for cb in worker_checks if cb.value]
+                
+                self.job_repo.assign_crew(
+                    job.job_id,
+                    self.current_user_id,
+                    selected_crew
+                )
+                
+                dialog.open = False
+                # Refresh jobs view
+                self.module_views["jobs"] = self._build_jobs_view()
+                if self.active_module == "jobs":
+                    self._set_active_module("jobs")
+                self._show_feedback_dialog("Crew assigned", Colors.GREEN, "Success")
+            self.page.update()
+        
+        def cancel(e):
+            dialog.open = False
+            self.page.update()
+        
+        dialog = ft.AlertDialog(
+            title=ft.Text("Assign Crew"),
+            content=ft.Container(
+                content=ft.Column([
+                    ft.Text("Select crew members:", size=12),
+                    ft.Divider(height=1),
+                    ft.Column(worker_checks, spacing=4)
+                ], spacing=8, tight=True),
+                width=300
+            ),
+            actions=[
+                ft.TextButton("Cancel", on_click=cancel),
+                ft.ElevatedButton("Save", on_click=save_crew)
+            ],
+            modal=True
+        )
+        
+        self.page.overlay.append(dialog)
+        dialog.open = True
+        self.page.update()
+    
+    def _upload_job_document(self, job):
+        """Trigger file picker for uploading job documents/photos."""
+        self.current_upload_job_id = job.job_id
+        
+        # Show dialog to select document type/tag
+        tag_dropdown = ft.Dropdown(
+            label="Document Type",
+            options=[
+                ft.dropdown.Option("before", "Before Photo"),
+                ft.dropdown.Option("during", "During Photo"),
+                ft.dropdown.Option("after", "After Photo"),
+                ft.dropdown.Option("inspection", "Inspection Report"),
+                ft.dropdown.Option("issue", "Issue/Problem"),
+                ft.dropdown.Option("other", "Other Document")
+            ],
+            value="other",
+            width=300
+        )
+        
+        def select_file(e):
+            self.current_upload_tag = tag_dropdown.value
+            dialog.open = False
+            self.page.update()
+            # Trigger file picker
+            self.job_document_picker.pick_files(
+                allow_multiple=True,
+                dialog_title="Select Documents/Photos"
+            )
+        
+        def cancel(e):
+            dialog.open = False
+            self.current_upload_job_id = None
+            self.page.update()
+        
+        dialog = ft.AlertDialog(
+            title=ft.Text("Upload Document"),
+            content=ft.Container(
+                content=ft.Column([
+                    ft.Text("Select the type of document you're uploading:", size=12),
+                    tag_dropdown
+                ], spacing=12, tight=True),
+                width=350
+            ),
+            actions=[
+                ft.TextButton("Cancel", on_click=cancel),
+                ft.ElevatedButton("Select Files", icon=ft.Icons.FOLDER_OPEN, on_click=select_file)
+            ],
+            modal=True
+        )
+        
+        self.page.overlay.append(dialog)
+        dialog.open = True
+        self.page.update()
+    
+    def _on_job_document_selected(self, e: ft.FilePickerResultEvent):
+        """Handle job document/photo upload."""
+        if not e.files or not self.current_upload_job_id:
+            return
+        
+        try:
+            import shutil
+            from pathlib import Path
+            
+            # Create job documents directory
+            job_dir = Path(f"data/jobs/{self.current_upload_job_id}")
+            job_dir.mkdir(parents=True, exist_ok=True)
+            
+            uploaded_count = 0
+            for file in e.files:
+                # Copy file to job directory
+                source_path = Path(file.path)
+                dest_path = job_dir / source_path.name
+                
+                shutil.copy2(source_path, dest_path)
+                
+                # Determine document type
+                doc_type = "photo" if source_path.suffix.lower() in ['.jpg', '.jpeg', '.png', '.gif'] else "document"
+                
+                # Save to database
+                if self.job_repo and self.current_user_id:
+                    self.job_repo.add_document(
+                        self.current_upload_job_id,
+                        self.current_user_id,
+                        doc_type,
+                        str(dest_path),
+                        getattr(self, 'current_upload_tag', None)
+                    )
+                    uploaded_count += 1
+            
+            self._show_feedback_dialog(f"Uploaded {uploaded_count} document(s)", Colors.GREEN, "Success")
+            
+            # Refresh jobs view
+            self.module_views["jobs"] = self._build_jobs_view()
+            if self.active_module == "jobs":
+                self._set_active_module("jobs")
+            
+        except Exception as ex:
+            self._show_feedback_dialog(f"Failed to upload: {str(ex)}", Colors.RED, "Error")
+        finally:
+            self.current_upload_job_id = None
+            self.page.update()
+    
+    def _show_job_completion_checklist(self, job):
+        """Show job completion checklist dialog."""
+        # Reload job with full details
+        full_job = self.job_repo.get_job(job.job_id) if self.job_repo else None
+        if not full_job:
+            return
+        
+        # Build checklist items
+        materials_cb = ft.Checkbox(label="All materials installed", value=False)
+        photos_cb = ft.Checkbox(
+            label="Photos uploaded",
+            value=len(full_job.documents) > 0,
+            disabled=len(full_job.documents) > 0
+        )
+        inspection_cb = ft.Checkbox(label="Inspection passed", value=False)
+        invoice_cb = ft.Checkbox(label="Ready to invoice", value=False)
+        
+        checklist = ft.Column([
+            ft.Text("Complete the following checklist:", size=13, weight=FontWeight.BOLD),
+            ft.Divider(height=1),
+            materials_cb,
+            photos_cb,
+            ft.Text(f"({len(full_job.documents)} document(s) uploaded)", size=10, color=Colors.GREY_500),
+            inspection_cb,
+            invoice_cb
+        ], spacing=8)
+        
+        def complete_job(e):
+            # Check if all items are checked
+            if not all([materials_cb.value, photos_cb.value, inspection_cb.value, invoice_cb.value]):
+                self._show_feedback_dialog("Please complete all checklist items before marking as complete.", Colors.AMBER_300, "Warning")
+                return
+            
+            # Update job status to completed
+            if self.job_repo and self.current_user_id:
+                self.job_repo.update_job_status(
+                    job.job_id,
+                    self.current_user_id,
+                    "completed",
+                    "Job marked as complete via checklist"
+                )
+                
+                dialog.open = False
+                self._show_feedback_dialog("Job marked as complete!", Colors.GREEN, "Success")
+                
+                # Show financial input dialog
+                self._show_financial_input_dialog(job)
+                
+                # Refresh jobs view
+                self.module_views["jobs"] = self._build_jobs_view()
+                if self.active_module == "jobs":
+                    self._set_active_module("jobs")
+            
+            self.page.update()
+        
+        def cancel(e):
+            dialog.open = False
+            self.page.update()
+        
+        dialog = ft.AlertDialog(
+            title=ft.Text(f"Complete Job: {full_job.project_name}"),
+            content=ft.Container(
+                content=checklist,
+                width=400
+            ),
+            actions=[
+                ft.TextButton("Cancel", on_click=cancel),
+                ft.ElevatedButton(
+                    "Mark Complete",
+                    icon=ft.Icons.CHECK_CIRCLE,
+                    bgcolor=Colors.GREEN_600,
+                    color=Colors.WHITE,
+                    on_click=complete_job
+                )
+            ],
+            modal=True
+        )
+        
+        self.page.overlay.append(dialog)
+        dialog.open = True
+        self.page.update()
+    
+    def _show_job_actions(self, job):
+        """Show action menu for a job."""
+        # Placeholder - will be implemented next
+        self._show_feedback_dialog("Job actions coming soon!", Colors.BLUE, "Info")
+    
+    def _build_dashboard_view(self) -> ft.Control:
+        """Build the main dashboard with KPIs and business overview."""
+        if not self.current_user_id or not self.job_repo:
+            return self._build_placeholder_view(
+                "Dashboard", 
+                "Please log in to view your business dashboard."
+            )
+        
+        try:
+            from datetime import datetime
+            
+            # Get current month metrics
+            now = datetime.now()
+            active_jobs = self.job_repo.get_active_jobs(self.current_user_id)
+            
+            # Calculate basic metrics
+            active_jobs_count = len([j for j in active_jobs if j.status in ["scheduled", "in_progress", "inspection"]])
+            completed_jobs_count = len([j for j in active_jobs if j.status == "completed"])
+            
+            # Calculate revenue and profit (simplified - only from loaded jobs)
+            total_revenue = sum(j.bid_amount or 0 for j in active_jobs if j.is_complete)
+            
+            # Calculate profit from jobs with financials
+            total_profit = 0
+            for job in active_jobs:
+                if job.is_complete:
+                    financials = self.job_repo.get_job_financials(job.job_id)
+                    if financials and financials.net_profit:
+                        total_profit += financials.net_profit
+            
+            profit_margin = (total_profit / total_revenue * 100) if total_revenue > 0 else 0
+            
+            # Calculate deadline metrics
+            from datetime import date, timedelta
+            today = date.today()
+            upcoming_deadline_jobs = []
+            overdue_jobs = []
+            todays_jobs = []
+            
+            for job in active_jobs:
+                # Check for jobs today
+                if job.scheduled_date:
+                    try:
+                        job_date = datetime.fromisoformat(job.scheduled_date).date()
+                        
+                        if job_date == today and job.status in ["scheduled", "in_progress"]:
+                            todays_jobs.append(job)
+                        
+                        # Check for overdue (completion date passed but not completed)
+                        if job.completion_date:
+                            completion_date = datetime.fromisoformat(job.completion_date).date()
+                            if completion_date < today and job.status not in ["completed", "invoiced"]:
+                                overdue_jobs.append(job)
+                        # Check for upcoming deadlines (within 7 days)
+                        elif job_date > today and job_date <= today + timedelta(days=7):
+                            upcoming_deadline_jobs.append(job)
+                    except:
+                        pass
+            
+            # Build KPI cards
+            kpi_cards = ft.Row([
+                self._build_kpi_card(
+                    "Total Revenue",
+                    f"${total_revenue:,.0f}",
+                    "This Month",
+                    ft.Icons.ATTACH_MONEY,
+                    Colors.BLUE_500
+                ),
+                self._build_kpi_card(
+                    "Net Profit",
+                    f"${total_profit:,.0f}",
+                    "This Month",
+                    ft.Icons.TRENDING_UP,
+                    Colors.GREEN_500
+                ),
+                self._build_kpi_card(
+                    "Active Jobs",
+                    str(active_jobs_count),
+                    "In Progress",
+                    ft.Icons.WORK,
+                    Colors.ORANGE_500
+                ),
+                self._build_kpi_card(
+                    "Profit Margin",
+                    f"{profit_margin:.1f}%",
+                    "Avg Margin",
+                    ft.Icons.PERCENT,
+                    Colors.PURPLE_500 if profit_margin > 20 else Colors.AMBER_500
+                )
+            ], spacing=16, scroll=ScrollMode.AUTO)
+            
+            # Deadline alerts section
+            deadline_alerts = []
+            
+            # Overdue jobs alert
+            if overdue_jobs:
+                overdue_items = []
+                for job in overdue_jobs[:3]:  # Show up to 3
+                    overdue_items.append(
+                        ft.Row([
+                            ft.Icon(ft.Icons.ERROR, size=16, color=Colors.RED_500),
+                            ft.Text(
+                                job.project_name or f"Job #{job.job_id}",
+                                size=12,
+                                color=Colors.GREY_800,
+                                weight=FontWeight.BOLD
+                            ),
+                            ft.Container(expand=True),
+                            ft.Text(
+                                "OVERDUE",
+                                size=10,
+                                color=Colors.WHITE,
+                                weight=FontWeight.BOLD
+                            )
+                        ], spacing=8)
+                    )
+                
+                if len(overdue_jobs) > 3:
+                    overdue_items.append(
+                        ft.Text(f"+{len(overdue_jobs) - 3} more overdue", size=10, color=Colors.RED_700, italic=True)
+                    )
+                
+                deadline_alerts.append(
+                    ft.Container(
+                        content=ft.Column([
+                            ft.Row([
+                                ft.Icon(ft.Icons.WARNING, size=20, color=Colors.RED_500),
+                                ft.Text(
+                                    f"{len(overdue_jobs)} Overdue Job{'s' if len(overdue_jobs) != 1 else ''}",
+                                    size=14,
+                                    weight=FontWeight.BOLD,
+                                    color=Colors.RED_900
+                                )
+                            ], spacing=8),
+                            ft.Column(overdue_items, spacing=6)
+                        ], spacing=8),
+                        padding=12,
+                        bgcolor=Colors.RED_500 + "20",  # 20% opacity
+                        border=ft.border.all(2, Colors.RED_500),
+                        border_radius=8
+                    )
+                )
+            
+            # Today's schedule
+            if todays_jobs:
+                todays_items = []
+                for job in todays_jobs[:3]:
+                    todays_items.append(
+                        ft.Row([
+                            ft.Icon(ft.Icons.TODAY, size=16, color=Colors.BLUE_700),
+                            ft.Text(
+                                job.project_name or f"Job #{job.job_id}",
+                                size=12,
+                                color=Colors.GREY_800
+                            ),
+                            ft.Container(expand=True),
+                            ft.Text(
+                                job.status_display,
+                                size=10,
+                                color=Colors.BLUE_700
+                            )
+                        ], spacing=8)
+                    )
+                
+                if len(todays_jobs) > 3:
+                    todays_items.append(
+                        ft.Text(f"+{len(todays_jobs) - 3} more today", size=10, color=Colors.BLUE_700, italic=True)
+                    )
+                
+                deadline_alerts.append(
+                    ft.Container(
+                        content=ft.Column([
+                            ft.Row([
+                                ft.Icon(ft.Icons.EVENT, size=20, color=Colors.BLUE_700),
+                                ft.Text(
+                                    f"Today's Schedule ({len(todays_jobs)} job{'s' if len(todays_jobs) != 1 else ''})",
+                                    size=14,
+                                    weight=FontWeight.BOLD,
+                                    color=Colors.BLUE_900
+                                )
+                            ], spacing=8),
+                            ft.Column(todays_items, spacing=6)
+                        ], spacing=8),
+                        padding=12,
+                        bgcolor=Colors.BLUE_500 + "20",
+                        border=ft.border.all(2, Colors.BLUE_500),
+                        border_radius=8
+                    )
+                )
+            
+            # Upcoming deadlines
+            if upcoming_deadline_jobs:
+                upcoming_items = []
+                for job in upcoming_deadline_jobs[:3]:
+                    try:
+                        job_date = datetime.fromisoformat(job.scheduled_date).date()
+                        days_until = (job_date - today).days
+                        upcoming_items.append(
+                            ft.Row([
+                                ft.Icon(ft.Icons.EVENT_NOTE, size=16, color=Colors.YELLOW_500),
+                                ft.Text(
+                                    job.project_name or f"Job #{job.job_id}",
+                                    size=12,
+                                    color=Colors.GREY_800
+                                ),
+                                ft.Container(expand=True),
+                                ft.Text(
+                                    f"in {days_until} day{'s' if days_until != 1 else ''}",
+                                    size=10,
+                                    color=Colors.YELLOW_500
+                                )
+                            ], spacing=8)
+                        )
+                    except:
+                        pass
+                
+                if len(upcoming_deadline_jobs) > 3:
+                    upcoming_items.append(
+                        ft.Text(f"+{len(upcoming_deadline_jobs) - 3} more upcoming", size=10, color=Colors.YELLOW_500, italic=True)
+                    )
+                
+                deadline_alerts.append(
+                    ft.Container(
+                        content=ft.Column([
+                            ft.Row([
+                                ft.Icon(ft.Icons.SCHEDULE, size=20, color=Colors.YELLOW_500),
+                                ft.Text(
+                                    f"Upcoming Deadlines (Next 7 Days)",
+                                    size=14,
+                                    weight=FontWeight.BOLD,
+                                    color=Colors.GREY_900
+                                )
+                            ], spacing=8),
+                            ft.Column(upcoming_items, spacing=6)
+                        ], spacing=8),
+                        padding=12,
+                        bgcolor=Colors.YELLOW_500 + "20",
+                        border=ft.border.all(2, Colors.YELLOW_500),
+                        border_radius=8
+                    )
+                )
+            
+            # Recent activity section
+            recent_jobs = active_jobs[:5]
+            activity_items = []
+            for job in recent_jobs:
+                status_colors = {
+                    "scheduled": Colors.BLUE_100,
+                    "in_progress": Colors.ORANGE_100,
+                    "inspection": Colors.PURPLE_100,
+                    "completed": Colors.GREEN_100
+                }
+                
+                activity_items.append(
+                    ft.Container(
+                        content=ft.Row([
+                            ft.Container(
+                                width=4,
+                                height=40,
+                                bgcolor=status_colors.get(job.status, Colors.GREY_300),
+                                border_radius=2
+                            ),
+                            ft.Column([
+                                ft.Text(job.project_name or f"Job #{job.job_id}", weight=FontWeight.BOLD, size=13),
+                                ft.Text(job.status_display, size=11, color=Colors.GREY_600),
+                                ft.Text(
+                                    f"${job.bid_amount:,.2f}" if job.bid_amount else "N/A",
+                                    size=11,
+                                    color=Colors.GREY_600
+                                )
+                            ], spacing=2, expand=True)
+                        ], spacing=12),
+                        padding=12,
+                        bgcolor=Colors.WHITE,
+                        border=ft.border.all(1, Colors.GREY_300),
+                        border_radius=8
+                    )
+                )
+            
+            if not activity_items:
+                activity_items = [
+                    ft.Container(
+                        content=ft.Column([
+                            ft.Icon(ft.Icons.INBOX, size=48, color=Colors.GREY_400),
+                            ft.Text("No recent jobs", size=13, color=Colors.GREY_500)
+                        ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=8),
+                        padding=40
+                    )
+                ]
+            
+            recent_activity = ft.Container(
+                content=ft.Column([
+                    ft.Text("Recent Activity", size=16, weight=FontWeight.BOLD),
+                    ft.Divider(height=1),
+                    ft.Column(activity_items, spacing=8)
+                ], spacing=12),
+                padding=16,
+                bgcolor=Colors.WHITE,
+                border=ft.border.all(1, Colors.GREY_300),
+                border_radius=12
+            )
+            
+            # Quick actions section
+            quick_actions = ft.Container(
+                content=ft.Column([
+                    ft.Text("Quick Actions", size=16, weight=FontWeight.BOLD),
+                    ft.Divider(height=1),
+                    ft.Column([
+                        ft.ElevatedButton(
+                            "Create New Bid",
+                            icon=ft.Icons.ADD_CIRCLE,
+                            on_click=lambda e: self._set_active_module("bidding"),
+                            width=200
+                        ),
+                        ft.ElevatedButton(
+                            "View All Jobs",
+                            icon=ft.Icons.WORK,
+                            on_click=lambda e: self._set_active_module("jobs"),
+                            width=200
+                        ),
+                        ft.ElevatedButton(
+                            "Bid Settings",
+                            icon=ft.Icons.SETTINGS,
+                            on_click=self._show_labor_settings_dialog,
+                            width=200
+                        )
+                    ], spacing=8)
+                ], spacing=12),
+                padding=16,
+                bgcolor=Colors.WHITE,
+                border=ft.border.all(1, Colors.GREY_300),
+                border_radius=12
+            )
+            
+            # Build dashboard layout
+            return ft.Container(
+                content=ft.Column([
+                    # Welcome message
+                    ft.Container(
+                        content=ft.Column([
+                            ft.Text(
+                                f"Welcome back! 👋",
+                                size=24,
+                                weight=FontWeight.BOLD
+                            ),
+                            ft.Text(
+                                f"Here's your business overview for {now.strftime('%B %Y')}",
+                                size=13,
+                                color=Colors.GREY_600
+                            )
+                        ], spacing=4),
+                        padding=ft.padding.only(bottom=20)
+                    ),
+                    
+                    # KPI Cards
+                    kpi_cards,
+                    
+                    # Deadline Alerts (if any)
+                    ft.Column(deadline_alerts, spacing=12) if deadline_alerts else ft.Container(),
+                    
+                    # Bottom section: Recent Activity + Quick Actions
+                    ft.Row([
+                        ft.Container(content=recent_activity, expand=2),
+                        ft.Container(content=quick_actions, expand=1)
+                    ], spacing=16, expand=True, scroll=ScrollMode.AUTO)
+                ], spacing=20, scroll=ScrollMode.AUTO, expand=True),
+                expand=True
+            )
+            
+        except Exception as e:
+            return self._build_placeholder_view(
+                "Dashboard Error",
+                f"Error loading dashboard: {str(e)}"
+            )
+    
+    def _build_kpi_card(
+        self,
+        title: str,
+        value: str,
+        subtitle: str,
+        icon: str,
+        color: str
+    ) -> ft.Container:
+        """Build a KPI card for the dashboard."""
+        return ft.Container(
+            content=ft.Column([
+                ft.Row([
+                    ft.Icon(icon, size=32, color=color),
+                    ft.Container(expand=True),
+                ]),
+                ft.Text(value, size=28, weight=FontWeight.BOLD, color=Colors.GREY_900),
+                ft.Text(title, size=13, weight=FontWeight.W_500, color=Colors.GREY_700),
+                ft.Text(subtitle, size=11, color=Colors.GREY_500)
+            ], spacing=8),
+            padding=20,
+            bgcolor=Colors.WHITE,
+            border=ft.border.all(1, Colors.GREY_300),
+            border_radius=12,
+            expand=True,
+            height=160
+        )
+    
+    def _convert_bid_to_job(self, e):
+        """Convert the current bid to a job."""
+        if not self.current_bid_id or not self.job_repo or not self.current_user_id:
+            self._show_feedback_dialog("No bid available to convert. Please save the bid first.", Colors.RED, "Error")
+            return
+        
+        # Worker selection checkboxes
+        worker_checks = []
+        for worker in self.workers:
+            cb = ft.Checkbox(label=worker["name"], value=False)
+            worker_checks.append(cb)
+        
+        crew_section = ft.Column([
+            ft.Text("Assign Crew:", size=12, weight=FontWeight.BOLD),
+            ft.Text("Select crew members to assign to this job", size=11, color=Colors.GREY_600),
+            ft.Column(worker_checks, spacing=4)
+        ], spacing=8)
+        
+        def create_job(e):
+            # Get selected crew members
+            selected_crew = [cb.label for cb in worker_checks if cb.value]
+            
+            # Create job (no scheduled date yet - will be set upon approval)
+            try:
+                job_id = self.job_repo.create_job_from_bid(
+                    self.current_bid_id,
+                    self.current_user_id,
+                    scheduled_date=None,  # No date yet - set upon approval
+                    assigned_crew=selected_crew if selected_crew else None
+                )
+                
+                # Update bid status to 'accepted'
+                if self.repo:
+                    from datetime import datetime
+                    now = datetime.now().strftime("%Y-%m-%d")
+                    self.repo.update_bid_status(
+                        self.current_bid_id,
+                        "accepted",
+                        date_sent=now,
+                        date_responded=now
+                    )
+                
+                dialog.open = False
+                self._show_feedback_dialog(
+                    f"Job #{job_id} created and placed in 'Awaiting Approval' status.\nApprove the job to schedule it.",
+                    Colors.GREEN,
+                    "Success"
+                )
+                
+                # Refresh jobs view and switch to it
+                self.module_views["jobs"] = self._build_jobs_view()
+                self.module_views["dashboard"] = self._build_dashboard_view()
+                self._set_active_module("jobs")
+                
+            except Exception as ex:
+                self._show_feedback_dialog(f"Failed to create job: {str(ex)}", Colors.RED, "Error")
+            
+            self.page.update()
+        
+        def cancel(e):
+            dialog.open = False
+            self.page.update()
+        
+        dialog = ft.AlertDialog(
+            title=ft.Text("Convert Bid to Job"),
+            content=ft.Container(
+                content=ft.Column([
+                    ft.Container(
+                        content=ft.Row([
+                            ft.Icon(ft.Icons.INFO_OUTLINE, size=20, color=Colors.AMBER_600),
+                            ft.Column([
+                                ft.Text("This will create a job in 'Awaiting Approval' status.", size=12, weight=FontWeight.BOLD),
+                                ft.Text("You can approve and schedule the job later.", size=11, color=Colors.GREY_600)
+                            ], spacing=2, expand=True)
+                        ], spacing=8),
+                        padding=12,
+                        bgcolor=Colors.AMBER_50,
+                        border_radius=8,
+                        margin=ft.margin.only(bottom=12)
+                    ),
+                    ft.Text(
+                        f"Project: {self.current_bid.project_name}",
+                        size=13,
+                        weight=FontWeight.BOLD,
+                        color=Colors.GREY_800
+                    ),
+                    ft.Text(
+                        f"Bid Amount: ${self.current_bid.final_bid_amount:,.2f}" if self.current_bid else "Bid Amount: N/A",
+                        size=12,
+                        color=Colors.GREY_600
+                    ),
+                    ft.Divider(height=1),
+                    crew_section
+                ], spacing=12, tight=True),
+                width=450
+            ),
+            actions=[
+                ft.TextButton("Cancel", on_click=cancel),
+                ft.ElevatedButton("Create Job", icon=ft.Icons.CHECK, on_click=create_job)
+            ],
+            modal=True
+        )
+        
+        self.page.overlay.append(dialog)
+        dialog.open = True
+        self.page.update()
+    
+    def _show_financial_input_dialog(self, job):
+        """Show dialog to enter actual costs for completed job."""
+        if not self.job_repo or not self.current_user_id:
+            return
+        
+        # Get job with bid details
+        full_job = self.job_repo.get_job(job.job_id)
+        if not full_job:
+            return
+        
+        # Check if financials already exist
+        existing_fin = self.job_repo.get_job_financials(job.job_id)
+        if not existing_fin and full_job.bid_amount:
+            # Create initial financial record with bid estimates
+            self.job_repo.create_job_financials(
+                job.job_id,
+                full_job.bid_amount,
+                0,  # estimated materials (from bid)
+                0,  # estimated labor hours
+                0   # estimated labor cost
+            )
+            existing_fin = self.job_repo.get_job_financials(job.job_id)
+        
+        # Build input fields
+        materials_field = ft.TextField(
+            label="Actual Materials Cost ($)",
+            value=str(existing_fin.actual_materials_cost) if existing_fin and existing_fin.actual_materials_cost else "",
+            keyboard_type=ft.KeyboardType.NUMBER,
+            width=200
+        )
+        
+        labor_hours_field = ft.TextField(
+            label="Actual Labor Hours",
+            value=str(existing_fin.actual_labor_hours) if existing_fin and existing_fin.actual_labor_hours else "",
+            keyboard_type=ft.KeyboardType.NUMBER,
+            width=200
+        )
+        
+        labor_cost_field = ft.TextField(
+            label="Actual Labor Cost ($)",
+            value=str(existing_fin.actual_labor_cost) if existing_fin and existing_fin.actual_labor_cost else "",
+            keyboard_type=ft.KeyboardType.NUMBER,
+            width=200
+        )
+        
+        overhead_field = ft.TextField(
+            label="Overhead Cost ($)",
+            value=str(existing_fin.overhead_cost) if existing_fin and existing_fin.overhead_cost else "",
+            keyboard_type=ft.KeyboardType.NUMBER,
+            width=200
+        )
+        
+        tools_field = ft.TextField(
+            label="Tools & Rental ($)",
+            value=str(existing_fin.tools_rental_cost) if existing_fin and existing_fin.tools_rental_cost else "",
+            keyboard_type=ft.KeyboardType.NUMBER,
+            width=200
+        )
+        
+        shipping_field = ft.TextField(
+            label="Shipping Cost ($)",
+            value=str(existing_fin.shipping_cost) if existing_fin and existing_fin.shipping_cost else "",
+            keyboard_type=ft.KeyboardType.NUMBER,
+            width=200
+        )
+        
+        tax_field = ft.TextField(
+            label="Tax Amount ($)",
+            value=str(existing_fin.tax_amount) if existing_fin and existing_fin.tax_amount else "",
+            keyboard_type=ft.KeyboardType.NUMBER,
+            width=200
+        )
+        
+        commission_field = ft.TextField(
+            label="Commission ($)",
+            value=str(existing_fin.commission_amount) if existing_fin and existing_fin.commission_amount else "",
+            keyboard_type=ft.KeyboardType.NUMBER,
+            width=200
+        )
+        
+        other_field = ft.TextField(
+            label="Other Costs ($)",
+            value=str(existing_fin.other_costs) if existing_fin and existing_fin.other_costs else "",
+            keyboard_type=ft.KeyboardType.NUMBER,
+            width=200
+        )
+        
+        def save_financials(e):
+            try:
+                # Parse and save actual costs
+                actual_costs = {
+                    'actual_materials_cost': float(materials_field.value) if materials_field.value else 0,
+                    'actual_labor_hours': float(labor_hours_field.value) if labor_hours_field.value else 0,
+                    'actual_labor_cost': float(labor_cost_field.value) if labor_cost_field.value else 0,
+                    'overhead_cost': float(overhead_field.value) if overhead_field.value else 0,
+                    'tools_rental_cost': float(tools_field.value) if tools_field.value else 0,
+                    'shipping_cost': float(shipping_field.value) if shipping_field.value else 0,
+                    'tax_amount': float(tax_field.value) if tax_field.value else 0,
+                    'commission_amount': float(commission_field.value) if commission_field.value else 0,
+                    'other_costs': float(other_field.value) if other_field.value else 0
+                }
+                
+                self.job_repo.update_job_financials(job.job_id, actual_costs)
+                
+                dialog.open = False
+                self._show_feedback_dialog("Financial data saved", Colors.GREEN, "Success")
+                self.page.update()
+                
+            except ValueError:
+                self._show_feedback_dialog("Please enter valid numbers", Colors.RED, "Error")
+        
+        def skip(e):
+            dialog.open = False
+            self.page.update()
+        
+        content = ft.Container(
+            content=ft.Column([
+                ft.Text(
+                    f"Enter actual costs for: {full_job.project_name}",
+                    size=13,
+                    color=Colors.GREY_700
+                ),
+                ft.Text(
+                    f"Bid Amount: ${full_job.bid_amount:,.2f}" if full_job.bid_amount else "N/A",
+                    size=12,
+                    weight=FontWeight.BOLD,
+                    color=Colors.BLUE_700
+                ),
+                ft.Divider(height=1),
+                ft.Row([materials_field, labor_hours_field], spacing=12),
+                ft.Row([labor_cost_field, overhead_field], spacing=12),
+                ft.Row([tools_field, shipping_field], spacing=12),
+                ft.Row([tax_field, commission_field], spacing=12),
+                other_field
+            ], spacing=12, scroll=ScrollMode.AUTO),
+            width=450,
+            height=500
+        )
+        
+        dialog = ft.AlertDialog(
+            title=ft.Text("Enter Actual Costs"),
+            content=content,
+            actions=[
+                ft.TextButton("Skip for Now", on_click=skip),
+                ft.ElevatedButton("Save", icon=ft.Icons.SAVE, on_click=save_financials)
+            ],
+            modal=True
+        )
+        
+        self.page.overlay.append(dialog)
+        dialog.open = True
+        self.page.update()
+    
     def _build_placeholder_view(self, title: str, description: str) -> ft.Control:
         """Simple placeholder content for future modules."""
         return ft.Container(
@@ -639,6 +2424,7 @@ class LightningBidApp:
             getattr(self, "pdf_file_picker", None),
             getattr(self, "excel_save_picker", None),
             getattr(self, "pdf_save_picker", None),
+            getattr(self, "job_document_picker", None),
         ]:
             if picker and picker not in self.page.overlay:
                 self.page.overlay.append(picker)
@@ -678,6 +2464,12 @@ class LightningBidApp:
         self.pdf_file_picker = ft.FilePicker(
             on_result=self._on_pdf_selected
         )
+        
+        # Job document/photo picker (for job uploads)
+        self.job_document_picker = ft.FilePicker(
+            on_result=self._on_job_document_selected
+        )
+        self.current_upload_job_id = None  # Track which job we're uploading to
         
         self.pdf_file_text = ft.Text(
             "No PDF file selected",
@@ -876,18 +2668,6 @@ class LightningBidApp:
     
     def _build_actions_section(self) -> ft.Container:
         """Build action buttons section."""
-        self.parse_pdf_btn = ft.ElevatedButton(
-            "📄 Search PDF",
-            on_click=self._parse_pdf,
-            disabled=False
-        )
-        
-        self.load_excel_btn = ft.ElevatedButton(
-            "📥 Load Excel",
-            on_click=self._load_excel,
-            disabled=False
-        )
-        
         self.calculate_btn = ft.ElevatedButton(
             "💰 Calculate Bid",
             on_click=self._calculate_bid,
@@ -905,10 +2685,8 @@ class LightningBidApp:
         )
         
         return ft.Container(
-            content=            ft.Row(
+            content=ft.Row(
                 [
-                    self.parse_pdf_btn,
-                    self.load_excel_btn,
                     self.labor_settings_btn,
                     self.calculate_btn
                 ],
@@ -958,10 +2736,22 @@ class LightningBidApp:
             disabled=True
         )
         
+        # Convert to Job button (Phase 1: Job Management)
+        self.convert_to_job_btn = ft.ElevatedButton(
+            "✅ Convert to Job",
+            icon=ft.Icons.WORK,
+            on_click=self._convert_bid_to_job,
+            disabled=True,
+            bgcolor=Colors.GREEN_600,
+            color=Colors.WHITE
+        )
+        
         # Build export buttons row (always include, just disabled initially)
         export_buttons_row = ft.Row([
             self.export_excel_btn,
-            self.export_pdf_btn
+            self.export_pdf_btn,
+            ft.Container(width=20),  # Spacer
+            self.convert_to_job_btn
         ], spacing=10)
         
         return ft.Container(
@@ -984,28 +2774,32 @@ class LightningBidApp:
     
     # File Input Handlers
     def _on_excel_selected(self, e: ft.FilePickerResultEvent):
-        """Handle Excel file selection."""
+        """Handle Excel file selection and automatically load it."""
         try:
             if e.files and len(e.files) > 0:
                 file_path = e.files[0].path
                 self.excel_file_path = Path(file_path)
                 self.excel_file_text.value = f"Selected: {e.files[0].name}"
                 self.excel_file_text.color = Colors.GREEN
-                self.load_excel_btn.disabled = False
                 self.page.update()
+                
+                # Automatically load the Excel file
+                self._load_excel(e)
         except Exception as ex:
             self._show_feedback_dialog(f"Error selecting file: {str(ex)}", Colors.RED)
     
     def _on_pdf_selected(self, e: ft.FilePickerResultEvent):
-        """Handle PDF file selection."""
+        """Handle PDF file selection and automatically parse it."""
         try:
             if e.files and len(e.files) > 0:
                 file_path = e.files[0].path
                 self.pdf_file_path = Path(file_path)
                 self.pdf_file_text.value = f"Selected: {e.files[0].name}"
                 self.pdf_file_text.color = Colors.GREEN
-                self.parse_pdf_btn.disabled = False
                 self.page.update()
+                
+                # Automatically parse the PDF file
+                self._parse_pdf(e)
         except Exception as ex:
             self._show_feedback_dialog(f"Error selecting file: {str(ex)}", Colors.RED)
 
@@ -1755,6 +3549,7 @@ class LightningBidApp:
         self.bid_table.visible = True
         self.export_excel_btn.disabled = False
         self.export_pdf_btn.disabled = False
+        self.convert_to_job_btn.disabled = False
         self.page.update()
     
     # --- MODIFIED EXPORT METHODS (Accepts path from save dialog) ---

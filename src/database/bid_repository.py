@@ -374,4 +374,103 @@ class BidRepository:
     
     def clear_autosave(self, user_id: int):
         self.db.execute("DELETE FROM Autosaves WHERE user_id = ?;", (user_id,))
+    
+    # ========================================================================
+    # BID STATUS TRACKING (Phase 1: Job Management)
+    # ========================================================================
+    
+    def update_bid_status(
+        self,
+        bid_id: int,
+        status: str,
+        date_sent: Optional[str] = None,
+        date_responded: Optional[str] = None,
+        follow_up_date: Optional[str] = None
+    ) -> bool:
+        """
+        Update the status of a bid.
+        
+        Args:
+            bid_id: ID of the bid
+            status: New status (draft, sent, accepted, rejected, expired)
+            date_sent: Optional date the bid was sent
+            date_responded: Optional date the customer responded
+            follow_up_date: Optional date for follow-up
+            
+        Returns:
+            True if successful
+        """
+        sql = "UPDATE Bids SET status = ?"
+        params = [status]
+        
+        if date_sent is not None:
+            sql += ", date_sent = ?"
+            params.append(date_sent)
+        
+        if date_responded is not None:
+            sql += ", date_responded = ?"
+            params.append(date_responded)
+        
+        if follow_up_date is not None:
+            sql += ", follow_up_date = ?"
+            params.append(follow_up_date)
+        
+        sql += " WHERE bid_id = ?;"
+        params.append(bid_id)
+        
+        self.db.execute(sql, tuple(params))
+        return True
+    
+    def get_bids_by_status(
+        self,
+        user_id: int,
+        status: str
+    ) -> List[Dict[str, Any]]:
+        """
+        Get all bids with a specific status.
+        
+        Args:
+            user_id: ID of the user
+            status: Status to filter by
+            
+        Returns:
+            List of bid dictionaries
+        """
+        rows = self.db.fetchall(
+            """
+            SELECT b.bid_id, b.created_at, b.final_amount, b.status, 
+                   b.date_sent, b.date_responded, b.follow_up_date,
+                   p.name as project_name
+            FROM Bids b
+            JOIN Projects p ON p.project_id = b.project_id
+            WHERE b.user_id = ? AND b.status = ?
+            ORDER BY b.created_at DESC;
+            """,
+            (user_id, status)
+        )
+        return [
+            {
+                "bid_id": r[0],
+                "created_at": r[1],
+                "final_amount": r[2],
+                "status": r[3],
+                "date_sent": r[4],
+                "date_responded": r[5],
+                "follow_up_date": r[6],
+                "project_name": r[7]
+            }
+            for r in rows
+        ]
+    
+    def get_pending_bids(self, user_id: int) -> List[Dict[str, Any]]:
+        """
+        Get all bids that have been sent but not yet responded to.
+        
+        Args:
+            user_id: ID of the user
+            
+        Returns:
+            List of pending bid dictionaries
+        """
+        return self.get_bids_by_status(user_id, "sent")
 
