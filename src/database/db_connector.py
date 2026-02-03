@@ -1,4 +1,5 @@
 import sqlite3
+import threading
 from pathlib import Path
 from typing import List, Tuple, Any, Optional
 
@@ -223,6 +224,7 @@ class DBConnector:
         """Initializes the database connection and ensures tables exist."""
         self._connection = None
         self._cursor = None
+        self._lock = threading.Lock()
         self._initialize_db()
 
     def _initialize_db(self):
@@ -232,7 +234,8 @@ class DBConnector:
             self.DB_PATH.parent.mkdir(parents=True, exist_ok=True)
             
             # Connect to the database (creates file if it doesn't exist)
-            self._connection = sqlite3.connect(self.DB_PATH)
+            # Allow access from multiple threads; guard with a lock for safety.
+            self._connection = sqlite3.connect(self.DB_PATH, check_same_thread=False)
             self._cursor = self._connection.cursor()
             self._cursor.execute("PRAGMA foreign_keys = ON;")
             
@@ -295,23 +298,27 @@ class DBConnector:
     def execute(self, sql: str, params: Tuple[Any, ...] = ()) -> sqlite3.Cursor:
         """Executes a non-query SQL statement (e.g., INSERT, UPDATE, DELETE)."""
         try:
-            self._cursor.execute(sql, params)
-            self._connection.commit()
-            return self._cursor
+            with self._lock:
+                self._cursor.execute(sql, params)
+                self._connection.commit()
+                return self._cursor
         except sqlite3.Error as e:
             print(f"Database error executing SQL: {e}")
-            self._connection.rollback()
+            with self._lock:
+                self._connection.rollback()
             raise
 
     def fetchone(self, sql: str, params: Tuple[Any, ...] = ()) -> Any:
         """Executes a query and returns a single row."""
-        self._cursor.execute(sql, params)
-        return self._cursor.fetchone()
+        with self._lock:
+            self._cursor.execute(sql, params)
+            return self._cursor.fetchone()
 
     def fetchall(self, sql: str, params: Tuple[Any, ...] = ()) -> List[Any]:
         """Executes a query and returns all rows."""
-        self._cursor.execute(sql, params)
-        return self._cursor.fetchall()
+        with self._lock:
+            self._cursor.execute(sql, params)
+            return self._cursor.fetchall()
 
     def close(self):
         """Closes the database connection."""

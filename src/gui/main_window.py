@@ -717,24 +717,9 @@ class LightningBidApp:
             on_job_click=self._on_calendar_job_click
         )
         
-        # Load jobs for the current month
+        # Load active jobs (calendar filters by date client-side)
         try:
-            # Get date range for current month
-            today = date.today()
-            first_day = date(today.year, today.month, 1)
-            
-            # Get last day of month
-            if today.month == 12:
-                last_day = date(today.year + 1, 1, 1) - timedelta(days=1)
-            else:
-                last_day = date(today.year, today.month + 1, 1) - timedelta(days=1)
-            
-            # Fetch jobs
-            jobs = self.job_repo.get_jobs_by_date_range(
-                self.current_user_id,
-                first_day.strftime("%Y-%m-%d"),
-                last_day.strftime("%Y-%m-%d")
-            )
+            jobs = self.job_repo.get_active_jobs(self.current_user_id)
             
             calendar.set_jobs(jobs)
             
@@ -843,6 +828,8 @@ class LightningBidApp:
             if len(crew_list) > 2:
                 crew_display += f" +{len(crew_list) - 2} more"
         
+        status_action = self._build_job_status_action(job)
+
         # Build card
         return ft.Container(
             content=ft.Column([
@@ -868,6 +855,7 @@ class LightningBidApp:
                         color=Colors.GREY_600
                     )
                 ], spacing=4),
+                status_action if status_action else ft.Container(),
                 ft.Divider(height=1, color=Colors.GREY_300),
                 # Show Approve button for awaiting approval jobs
                 ft.ElevatedButton(
@@ -896,6 +884,56 @@ class LightningBidApp:
             border=ft.border.all(1, Colors.GREY_300),
             border_radius=8
         )
+
+    def _build_job_status_action(self, job) -> Optional[ft.Control]:
+        """Build a quick status transition button for a job card."""
+        if job.status == "scheduled":
+            return ft.OutlinedButton(
+                "Move to In Progress",
+                icon=ft.Icons.PLAY_CIRCLE,
+                on_click=lambda e, j=job: self._quick_set_job_status(j, "in_progress")
+            )
+        if job.status == "in_progress":
+            return ft.OutlinedButton(
+                "Move to Inspection",
+                icon=ft.Icons.SEARCH,
+                on_click=lambda e, j=job: self._quick_set_job_status(j, "inspection")
+            )
+        if job.status == "inspection":
+            return ft.OutlinedButton(
+                "Mark Completed",
+                icon=ft.Icons.CHECK_CIRCLE,
+                on_click=lambda e, j=job: self._quick_set_job_status(j, "completed")
+            )
+        return None
+
+    def _quick_set_job_status(self, job, new_status: str):
+        """Quickly set job status and refresh relevant views."""
+        if not self.job_repo or not self.current_user_id:
+            return
+        try:
+            self.job_repo.update_job_status(
+                job.job_id,
+                self.current_user_id,
+                new_status,
+                f"Status changed to {new_status.replace('_', ' ')}"
+            )
+
+            # Refresh views
+            self.module_views["jobs"] = self._build_jobs_view()
+            self.module_views["calendar"] = self._build_calendar_view()
+            self.module_views["dashboard"] = self._build_dashboard_view()
+
+            if self.active_module in ["jobs", "calendar", "dashboard"]:
+                self._set_active_module(self.active_module)
+
+            self._show_feedback_dialog(
+                f"Job moved to {new_status.replace('_', ' ').title()}",
+                Colors.GREEN,
+                "Success"
+            )
+        except Exception as ex:
+            self._show_feedback_dialog(f"Error updating job: {str(ex)}", Colors.RED, "Error")
     
     def _show_approve_job_dialog(self, job):
         """Show dialog to approve a job and set scheduled date."""
@@ -977,8 +1015,7 @@ class LightningBidApp:
                     ], spacing=8),
                     padding=ft.padding.only(bottom=12),
                     bgcolor=Colors.BLUE_50,
-                    border_radius=8,
-                    padding_all=12
+                    border_radius=8
                 ),
                 scheduled_date_field,
                 notes_field,
@@ -1724,22 +1761,38 @@ class LightningBidApp:
             
             # Get current month metrics
             now = datetime.now()
-            active_jobs = self.job_repo.get_active_jobs(self.current_user_id)
+            all_jobs = self.job_repo.get_all_jobs(self.current_user_id)
+            active_jobs = [j for j in all_jobs if j.status in ["scheduled", "in_progress", "inspection"]]
             
             # Calculate basic metrics
-            active_jobs_count = len([j for j in active_jobs if j.status in ["scheduled", "in_progress", "inspection"]])
-            completed_jobs_count = len([j for j in active_jobs if j.status == "completed"])
+            active_jobs_count = len(active_jobs)
+            completed_jobs_count = len([j for j in all_jobs if j.status in ["completed", "invoiced"]])
             
             # Calculate revenue and profit (simplified - only from loaded jobs)
-            total_revenue = sum(j.bid_amount or 0 for j in active_jobs if j.is_complete)
+            total_revenue = sum(j.bid_amount or 0 for j in all_jobs if j.is_complete)
             
             # Calculate profit from jobs with financials
             total_profit = 0
-            for job in active_jobs:
+            for job in all_jobs:
                 if job.is_complete:
                     financials = self.job_repo.get_job_financials(job.job_id)
-                    if financials and financials.net_profit:
-                        total_profit += financials.net_profit
+                    if financials:
+                        if financials.net_profit is not None:
+                            total_profit += financials.net_profit
+                        else:
+                            # Fallback: compute from available cost fields
+                            costs = [
+                                financials.actual_materials_cost,
+                                financials.actual_labor_cost,
+                                financials.overhead_cost,
+                                financials.tools_rental_cost,
+                                financials.shipping_cost,
+                                financials.tax_amount,
+                                financials.commission_amount,
+                                financials.other_costs,
+                            ]
+                            total_costs = sum(c for c in costs if c is not None)
+                            total_profit += (financials.bid_amount - total_costs)
             
             profit_margin = (total_profit / total_revenue * 100) if total_revenue > 0 else 0
             
@@ -2326,6 +2379,10 @@ class LightningBidApp:
                 
                 dialog.open = False
                 self._show_feedback_dialog("Financial data saved", Colors.GREEN, "Success")
+                # Refresh dashboard to reflect updated profit
+                self.module_views["dashboard"] = self._build_dashboard_view()
+                if self.active_module == "dashboard":
+                    self._set_active_module("dashboard")
                 self.page.update()
                 
             except ValueError:
@@ -4025,7 +4082,8 @@ class LightningBidApp:
         project_name = (self.project_data.get("project_name") or "").strip()
         if not project_name:
             self.bid_history_dropdown.options = []
-            self.bid_history_dropdown.update()
+            if self.bid_history_dropdown.page:
+                self.bid_history_dropdown.update()
             return
         
         try:
@@ -4040,7 +4098,8 @@ class LightningBidApp:
                 label = f"{bid['created_at']} - ${bid['final_amount']:.2f}"
                 options.append(ft.dropdown.Option(str(bid["bid_id"]), label))
             self.bid_history_dropdown.options = options
-            self.bid_history_dropdown.update()
+            if self.bid_history_dropdown.page:
+                self.bid_history_dropdown.update()
         except Exception:
             # Ignore history refresh failures
             pass
@@ -4149,3 +4208,4 @@ def main(page: ft.Page):
 
 if __name__ == "__main__":
     ft.app(target=main)
+

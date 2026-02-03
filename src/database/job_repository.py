@@ -143,6 +143,32 @@ class JobRepository:
         
         rows = self.db.fetchall(sql, (user_id,))
         return [self._row_to_job(row) for row in rows]
+
+    def get_all_jobs(self, user_id: int) -> List[Job]:
+        """
+        Get all jobs for a user regardless of status.
+        
+        Args:
+            user_id: ID of the user
+            
+        Returns:
+            List of Job objects
+        """
+        sql = """
+        SELECT 
+            j.job_id, j.bid_id, j.user_id, j.status,
+            j.scheduled_date, j.start_date, j.completion_date,
+            j.assigned_crew, j.notes, j.created_at, j.updated_at,
+            p.name as project_name, b.final_amount as bid_amount
+        FROM Jobs j
+        JOIN Bids b ON j.bid_id = b.bid_id
+        JOIN Projects p ON b.project_id = p.project_id
+        WHERE j.user_id = ?
+        ORDER BY j.scheduled_date ASC, j.created_at DESC;
+        """
+        
+        rows = self.db.fetchall(sql, (user_id,))
+        return [self._row_to_job(row) for row in rows]
     
     def get_jobs_by_status(self, user_id: int, status: str) -> List[Job]:
         """

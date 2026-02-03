@@ -93,19 +93,62 @@ class CalendarView:
     
     def get_jobs_for_date(self, target_date: date) -> List[Job]:
         """Get all jobs scheduled for a specific date."""
-        date_str = target_date.strftime("%Y-%m-%d")
         jobs = []
         
         for job in self.get_filtered_jobs():
             # Check if job falls on this date
-            if job.scheduled_date and job.scheduled_date.startswith(date_str):
+            if self._date_matches(job.scheduled_date, target_date):
                 jobs.append(job)
-            elif job.start_date and job.start_date.startswith(date_str):
+            elif self._date_matches(job.start_date, target_date):
                 jobs.append(job)
-            elif job.completion_date and job.completion_date.startswith(date_str):
+            elif self._date_matches(job.completion_date, target_date):
                 jobs.append(job)
         
         return jobs
+
+    def _date_matches(self, value: Optional[str], target_date: date) -> bool:
+        """Return True if a stored date string matches the target date."""
+        if not value:
+            return False
+        parsed = self._parse_date(value)
+        if not parsed:
+            return False
+        return parsed == target_date
+
+    def _parse_date(self, value: str) -> Optional[date]:
+        """Parse common date formats stored in the DB or entered by users."""
+        value = value.strip()
+        if not value:
+            return None
+
+        # Fast path for ISO date (YYYY-MM-DD)
+        if len(value) >= 10:
+            iso_candidate = value[:10]
+            try:
+                return datetime.strptime(iso_candidate, "%Y-%m-%d").date()
+            except ValueError:
+                pass
+
+        # Common user-entered formats
+        for fmt in ("%m/%d/%Y", "%m/%d/%y", "%Y/%m/%d"):
+            try:
+                return datetime.strptime(value, fmt).date()
+            except ValueError:
+                continue
+
+        # Fallback: try parsing full datetime strings
+        for fmt in (
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%d %H:%M:%S.%f",
+            "%Y-%m-%dT%H:%M:%S",
+            "%Y-%m-%dT%H:%M:%S.%f",
+        ):
+            try:
+                return datetime.strptime(value, fmt).date()
+            except ValueError:
+                continue
+
+        return None
     
     def get_status_color(self, status: str) -> tuple[str, str]:
         """Get background and text color for a status."""
@@ -119,10 +162,20 @@ class CalendarView:
     
     def build(self) -> ft.Container:
         """Build and return the calendar view container."""
-        # Header with navigation and view switcher
+        if not self.calendar_container:
+            self.calendar_container = ft.Container(
+                content=self._build_content(),
+                expand=True
+            )
+        else:
+            self.calendar_container.content = self._build_content()
+        
+        return self.calendar_container
+
+    def _build_content(self) -> ft.Column:
+        """Build the calendar content area (header + active view)."""
         header = self._build_header()
         
-        # Calendar content based on view mode
         if self.view_mode == "month":
             calendar_content = self._build_month_view()
         elif self.view_mode == "week":
@@ -130,16 +183,11 @@ class CalendarView:
         else:  # day
             calendar_content = self._build_day_view()
         
-        self.calendar_container = ft.Container(
-            content=ft.Column(
-                [header, calendar_content],
-                spacing=0,
-                expand=True
-            ),
+        return ft.Column(
+            [header, calendar_content],
+            spacing=0,
             expand=True
         )
-        
-        return self.calendar_container
     
     def _build_header(self) -> ft.Container:
         """Build the calendar header with navigation and controls."""
@@ -178,10 +226,33 @@ class CalendarView:
             on_click=self._on_next_period,
             tooltip="Next"
         )
+
+        # Month/Year selectors (quick jump)
+        month_options = [
+            ft.dropdown.Option(str(i), month_name[i])
+            for i in range(1, 13)
+        ]
+        current_year = self.current_date.year
+        year_options = [
+            ft.dropdown.Option(str(y), str(y))
+            for y in range(current_year - 5, current_year + 6)
+        ]
+        month_selector = ft.Dropdown(
+            value=str(self.current_date.month),
+            options=month_options,
+            width=140,
+            on_change=self._on_month_change
+        )
+        year_selector = ft.Dropdown(
+            value=str(self.current_date.year),
+            options=year_options,
+            width=110,
+            on_change=self._on_year_change
+        )
         
         # View mode selector
         self.view_mode_selector = ft.SegmentedButton(
-            selected={"month"},
+            selected={self.view_mode},
             allow_empty_selection=False,
             allow_multiple_selection=False,
             segments=[
@@ -248,7 +319,7 @@ class CalendarView:
                     [
                         # Left side: Navigation
                         ft.Row(
-                            [prev_btn, today_btn, next_btn, self.month_year_text],
+                            [prev_btn, today_btn, next_btn, self.month_year_text, month_selector, year_selector],
                             spacing=8,
                             alignment=ft.MainAxisAlignment.START
                         ),
@@ -635,6 +706,24 @@ class CalendarView:
         if selected:
             self.view_mode = selected[0]
             self.refresh()
+
+    def _on_month_change(self, e):
+        """Jump to a selected month."""
+        try:
+            month = int(e.control.value)
+        except (TypeError, ValueError):
+            return
+        self.current_date = date(self.current_date.year, month, 1)
+        self.refresh()
+
+    def _on_year_change(self, e):
+        """Jump to a selected year."""
+        try:
+            year = int(e.control.value)
+        except (TypeError, ValueError):
+            return
+        self.current_date = date(year, self.current_date.month, 1)
+        self.refresh()
     
     def _on_date_cell_click(self, day_date: date):
         """Handle date cell click."""
@@ -664,8 +753,16 @@ class CalendarView:
     
     def refresh(self):
         """Refresh the calendar display."""
-        if self.calendar_container and self.calendar_container.page:
-            # Rebuild the entire calendar
-            new_content = self.build().content
-            self.calendar_container.content = new_content
+        if not self.calendar_container:
+            return
+        if not self.calendar_container.page or not self.calendar_container.uid:
+            return
+
+        # Rebuild the entire calendar
+        new_content = self._build_content()
+        self.calendar_container.content = new_content
+        try:
             self.calendar_container.update()
+        except AssertionError:
+            # Control isn't mounted yet; ignore and let the next refresh handle it.
+            pass
