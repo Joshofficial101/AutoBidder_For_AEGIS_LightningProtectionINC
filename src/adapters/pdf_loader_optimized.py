@@ -179,8 +179,8 @@ class OptimizedPDFParser:
         """
         Perform OCR on selected pages of a PDF.
         
-        Uses PyMuPDF to render pages to images, then Tesseract for OCR.
-        Optimized for speed with lower DPI and limited page selection.
+        Uses PyMuPDF to render cropped page regions to images, then Tesseract for OCR.
+        Optimized for speed with lower DPI, limited page selection, and targeted crops.
         
         Args:
             pdf_path: Path to the PDF
@@ -208,19 +208,7 @@ class OptimizedPDFParser:
                 )
                 
                 page = doc[page_num]
-                
-                # Render page to image at 150 DPI (balance of speed vs quality)
-                # Lower DPI = faster but less accurate
-                mat = fitz.Matrix(150/72, 150/72)  # 150 DPI
-                pix = page.get_pixmap(matrix=mat)
-                
-                # Convert to PIL Image
-                img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-                
-                # Run OCR with optimized config
-                # PSM 6 = Assume uniform block of text
-                text = pytesseract.image_to_string(img, config='--psm 6 --oem 3')
-                ocr_text += text + "\n\n"
+                ocr_text += self._ocr_page_regions(page)
             
             doc.close()
             
@@ -228,6 +216,123 @@ class OptimizedPDFParser:
             print(f"  OCR error: {e}")
         
         return ocr_text
+
+    def _ocr_page_regions(self, page) -> str:
+        """OCR targeted regions of a page to capture dimension callouts quickly."""
+        if not HAS_OCR:
+            return ""
+
+        # Render crops at moderate DPI for better dimension capture
+        mat = fitz.Matrix(200/72, 200/72)
+        rect = page.rect
+        w = rect.width
+        h = rect.height
+
+        # Define relative crop regions (x0, y0, x1, y1)
+        regions = [
+            (0.15, 0.15, 0.85, 0.85),  # central drawing area
+            (0.80, 0.10, 1.00, 0.90),  # right margin annotations
+            (0.60, 0.75, 1.00, 1.00),  # bottom-right (title block / notes)
+            (0.00, 0.00, 1.00, 0.15),  # top band (sheet title/notes)
+            (0.00, 0.10, 0.20, 0.90),  # left margin
+        ]
+
+        # Add 2x2 tiles of the central drawing area for better coverage
+        tiles = [
+            (0.15, 0.15, 0.50, 0.50),
+            (0.50, 0.15, 0.85, 0.50),
+            (0.15, 0.50, 0.50, 0.85),
+            (0.50, 0.50, 0.85, 0.85),
+        ]
+        regions.extend(tiles)
+
+        text_parts = []
+        for (x0, y0, x1, y1) in regions:
+            clip = fitz.Rect(rect.x0 + x0 * w, rect.y0 + y0 * h, rect.x0 + x1 * w, rect.y0 + y1 * h)
+            pix = page.get_pixmap(matrix=mat, clip=clip)
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+
+            # Light preprocessing to help with dimension callouts
+            gray = img.convert("L")
+            bw = gray.point(lambda x: 0 if x < 170 else 255, "1")
+
+            # PSM 11: sparse text; good for drawings with scattered labels
+            text = pytesseract.image_to_string(bw, config='--psm 11 --oem 3')
+            if text.strip():
+                text_parts.append(text)
+
+        return "\n\n".join(text_parts)
+
+    def _should_run_ocr(self, result: ExtractionResult, all_text: str) -> bool:
+        """Decide if OCR should run based on text sparsity and missing data."""
+        has_any = any([
+            result.roof_area_sqft,
+            result.length_ft,
+            result.perimeter_ft,
+            result.building_height_ft,
+        ])
+
+        # If nothing found and text is sparse, OCR is likely needed
+        if not has_any and len(all_text.strip()) < 5000:
+            return True
+
+        # If height is missing and text is sparse, OCR may still help
+        if result.building_height_ft is None and len(all_text.strip()) < 8000:
+            return True
+
+        return False
+
+    def _has_enough_dimensions(self, result: ExtractionResult) -> bool:
+        """Return True if we have enough dimensions to stop OCR."""
+        if result.building_height_ft is None:
+            return False
+        if result.perimeter_ft is not None:
+            return True
+        if result.roof_area_sqft is not None:
+            return True
+        if result.length_ft is not None and result.width_ft is not None:
+            return True
+        return False
+
+    def _rank_pages_for_ocr(self, doc, pages_with_text: List[Tuple[int, str]]) -> List[int]:
+        """Rank pages likely to contain drawing dimensions."""
+        scores = []
+        text_map = {p: t for p, t in pages_with_text}
+
+        for page_num in range(len(doc)):
+            page = doc[page_num]
+            rect = page.rect
+            width_in = rect.width / 72.0
+            height_in = rect.height / 72.0
+            area_in = max(width_in * height_in, 1.0)
+
+            text = text_map.get(page_num, "")
+            text_len = len(text)
+            text_density = text_len / area_in  # chars per sq inch
+
+            # Larger sheets (A1/A0) tend to be drawings
+            size_score = min(2.0, area_in / (11 * 17))
+
+            # Lower text density -> more likely drawing
+            density_score = 2.0 if text_density < 10 else 1.0 if text_density < 25 else 0.0
+
+            # Keyword bonus
+            keyword_bonus = 0.0
+            if re.search(r"\b(plan|elevation|section|site|roof|details?)\b", text, re.IGNORECASE):
+                keyword_bonus = 1.5
+
+            # Vector density bonus (drawings often have many vector objects)
+            try:
+                drawings = page.get_drawings()
+                vector_bonus = 1.5 if drawings and len(drawings) > 50 else 0.5 if drawings and len(drawings) > 10 else 0.0
+            except Exception:
+                vector_bonus = 0.0
+
+            score = size_score + density_score + keyword_bonus + vector_bonus
+            scores.append((score, page_num))
+
+        scores.sort(reverse=True)
+        return [p for _, p in scores]
     
     def _parse_with_pymupdf(self, pdf_path: Path) -> ExtractionResult:
         """Parse PDF using PyMuPDF (fastest method)."""
@@ -263,36 +368,48 @@ class OptimizedPDFParser:
                 progress = 5 + int((page_num / total_pages) * 35)
                 self._report_progress(progress, 100, f"Reading page {page_num + 1}/{total_pages}")
             
-            doc.close()
-            
             print(f"  [1/4] Text extraction: {len(pages_with_text)}/{total_pages} pages have text")
             
             # Phase 2: Extract dimensions (40-50%)
             self._report_progress(45, 100, "Analyzing dimensions...")
-            self._extract_dimensions_from_text(all_text, result)
+            self._extract_dimensions_from_text(all_text, result, source="text")
             
             # Check if we found dimensions - if not and OCR is available, use it
-            needs_ocr = (
-                result.roof_area_sqft is None and 
-                result.length_ft is None and 
-                result.perimeter_ft is None and
-                HAS_OCR and
-                len(all_text.strip()) < 5000  # Indicates sparse text (CAD drawing)
-            )
+            needs_ocr = HAS_OCR and self._should_run_ocr(result, all_text)
             
             if needs_ocr:
-                print(f"  [2/4] No dimensions in text - trying OCR on key pages...")
-                self._report_progress(50, 100, "No dimensions found - trying OCR...")
-                
-                # OCR first 4 pages (title page, site plan, floor plan usually)
-                pages_to_ocr = list(range(min(4, total_pages)))
-                ocr_text = self._perform_selective_ocr(pdf_path, pages_to_ocr)
-                
-                if ocr_text:
-                    all_text += "\n\n=== OCR TEXT ===\n" + ocr_text
-                    self._extract_dimensions_from_text(ocr_text, result)
+                print(f"  [2/4] No dimensions in text - running deeper OCR on all pages...")
+                self._report_progress(50, 100, "No dimensions found - running OCR...")
+
+                ocr_start = time.time()
+                max_ocr_seconds = 140
+                combined_ocr_text = ""
+
+                # OCR every page (no page cutting), but stop early once we have enough data
+                for page_num in range(total_pages):
+                    if time.time() - ocr_start > max_ocr_seconds:
+                        print("  OCR time cap reached; returning best-effort results")
+                        break
+
+                    page = doc[page_num]
+                    self._report_progress(
+                        50 + int((page_num / max(total_pages, 1)) * 30),
+                        100,
+                        f"OCR page {page_num + 1}/{total_pages}..."
+                    )
+
+                    page_text = self._ocr_page_regions(page)
+                    if page_text:
+                        combined_ocr_text += page_text + "\n\n"
+                        self._extract_dimensions_from_text(page_text, result, source="ocr")
+
+                    if self._has_enough_dimensions(result):
+                        break
+
+                if combined_ocr_text:
+                    all_text += "\n\n=== OCR TEXT ===\n" + combined_ocr_text
                     result.extraction_method = "pymupdf_with_ocr"
-                    print(f"       OCR extracted {len(ocr_text)} chars of text")
+                    print(f"       OCR extracted {len(combined_ocr_text)} chars of text")
             
             print(f"  [2/4] Dimension extraction complete")
             
@@ -322,6 +439,12 @@ class OptimizedPDFParser:
             print(f"  ERROR in PyMuPDF parsing: {e}")
             import traceback
             traceback.print_exc()
+        finally:
+            try:
+                if "doc" in locals() and doc:
+                    doc.close()
+            except Exception:
+                pass
         
         return result
     
@@ -356,7 +479,7 @@ class OptimizedPDFParser:
                 
                 # Extract data
                 self._report_progress(65, 100, "Analyzing dimensions...")
-                self._extract_dimensions_from_text(all_text, result)
+                self._extract_dimensions_from_text(all_text, result, source="text")
                 
                 self._report_progress(80, 100, "Extracting project info...")
                 self._extract_project_info(all_text, result, pdf_path)
@@ -371,7 +494,7 @@ class OptimizedPDFParser:
         
         return result
     
-    def _extract_dimensions_from_text(self, text: str, result: ExtractionResult):
+    def _extract_dimensions_from_text(self, text: str, result: ExtractionResult, source: str = "text"):
         """Extract all dimension data from text using compiled patterns."""
         
         # Extract LxW dimensions
@@ -394,51 +517,79 @@ class OptimizedPDFParser:
             result.length_ft = max(best[0], best[1])
             result.width_ft = min(best[0], best[1])
         
-        # Extract height
+        # Extract height (score candidates, prefer labeled "height" over generic)
+        height_candidates: List[Tuple[float, float]] = []
         for pattern in HEIGHT_PATTERNS:
-            match = pattern.search(text)
-            if match:
+            for match in pattern.finditer(text):
                 try:
                     value = float(match.group(1))
-                    # Convert stories to feet if needed
-                    if "stor" in pattern.pattern.lower() or "floor" in pattern.pattern.lower():
+                    pattern_text = pattern.pattern.lower()
+                    score = 1.0
+                    if "height" in pattern_text or "building" in pattern_text:
+                        score += 1.5
+                    if "stor" in pattern_text or "floor" in pattern_text:
+                        score -= 0.25
                         if value < 20:  # Likely number of stories
                             value = value * 12 + 2  # 12 ft per story + 2 ft
-                    
+
                     # Validate: Reasonable building height (8-500 ft)
                     if 8 <= value <= 500:
-                        result.building_height_ft = value
-                        break
+                        height_candidates.append((score, value))
                 except (ValueError, IndexError):
                     continue
+
+        if height_candidates:
+            # Prefer higher score; if tie, prefer larger height
+            height_candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
+            result.building_height_ft = height_candidates[0][1]
         
-        # Extract area
+        # Extract area (score candidates; in OCR, prefer labeled area)
+        area_candidates: List[Tuple[float, float]] = []
         for pattern in AREA_PATTERNS:
-            match = pattern.search(text)
-            if match:
+            for match in pattern.finditer(text):
                 try:
                     area_str = match.group(1).replace(",", "")
                     area = float(area_str)
+                    pattern_text = pattern.pattern.lower()
+                    score = 1.0
+                    if "roof" in pattern_text or "building" in pattern_text or "floor" in pattern_text or "gross" in pattern_text or "total" in pattern_text:
+                        score += 1.5
+
+                    # In OCR, be stricter: down-rank generic area with no label
+                    if source == "ocr" and score <= 1.0:
+                        score -= 0.5
+
                     # Validate: Reasonable building area (100 - 10,000,000 sqft)
                     if 100 <= area <= 10000000:
-                        result.roof_area_sqft = area
-                        break
+                        area_candidates.append((score, area))
                 except (ValueError, IndexError):
                     continue
+
+        if area_candidates:
+            area_candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
+            result.roof_area_sqft = area_candidates[0][1]
         
-        # Extract perimeter
+        # Extract perimeter (score candidates)
+        perimeter_candidates: List[Tuple[float, float]] = []
         for pattern in PERIMETER_PATTERNS:
-            match = pattern.search(text)
-            if match:
+            for match in pattern.finditer(text):
                 try:
                     perim_str = match.group(1).replace(",", "")
                     perim = float(perim_str)
+                    pattern_text = pattern.pattern.lower()
+                    score = 1.0
+                    if "perimeter" in pattern_text or "roof" in pattern_text:
+                        score += 1.0
+
                     # Validate: Reasonable perimeter (40 - 50,000 ft)
                     if 40 <= perim <= 50000:
-                        result.perimeter_ft = perim
-                        break
+                        perimeter_candidates.append((score, perim))
                 except (ValueError, IndexError):
                     continue
+
+        if perimeter_candidates:
+            perimeter_candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
+            result.perimeter_ft = perimeter_candidates[0][1]
     
     def _extract_project_info(self, text: str, result: ExtractionResult, pdf_path: Path):
         """Extract project name and location from text."""
