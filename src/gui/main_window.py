@@ -139,6 +139,22 @@ class LightningBidApp:
         # --------------------------------------------
 
         self._show_login_screen()
+        self._force_layout_refresh()
+
+    def _force_layout_refresh(self):
+        """Force a layout refresh to avoid click hitbox glitches on Windows."""
+        try:
+            w = self.page.window.width
+            h = self.page.window.height
+            # Nudge size by 1px to trigger a layout recalculation
+            self.page.window.width = w + 1
+            self.page.window.height = h + 1
+            self.page.update()
+            self.page.window.width = w
+            self.page.window.height = h
+            self.page.update()
+        except Exception:
+            pass
 
     # --- DB INITIALIZATION ---
     def _initialize_db(self) -> Optional[DBConnector]:
@@ -437,6 +453,7 @@ class LightningBidApp:
         self.page.views.clear()
         self.page.views.append(main_view)
         self.page.update()
+        self._force_layout_refresh()
         
         # Offer to restore last session (TEMP until DB migration)
         self._prompt_restore_session()
