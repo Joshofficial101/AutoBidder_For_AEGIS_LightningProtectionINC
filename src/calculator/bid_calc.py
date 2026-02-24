@@ -178,7 +178,11 @@ class BidCalculator:
             tools_rental_amount=project_data.get("tools_rental_amount", 0.0),
             tools_rental_type=project_data.get("tools_rental_type", "$"),
             shipping_amount=project_data.get("shipping_amount", 0.0),
-            use_tax_pct=project_data.get("use_tax_pct", 0.0)
+            use_tax_pct=project_data.get("use_tax_pct", 0.0),
+            minimum_bid_amount=project_data.get("minimum_bid_amount", 0.0),
+            rounding_increment=project_data.get("rounding_increment", 0.0),
+            rounding_mode=project_data.get("rounding_mode", "none"),
+            custom_pricing_adjustments=project_data.get("custom_pricing_adjustments", []),
         )
 
         # Step 3: Build each section

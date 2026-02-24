@@ -135,7 +135,7 @@ Cost per sqft: $1.90
 
 ## Next Steps
 
-1. Run the application: `run_gui.cmd`
+1. Run the application: `run_desktop.cmd`
 2. Load the ERICO price list from `data/inputs/`
 3. Configure your worker crew (Labor & Crew Settings)
 4. Calculate a real project bid

@@ -23,7 +23,7 @@ The PDF parser now **automatically detects** CAD-style building plans and uses *
 
 1. **Start the app:**
    ```bash
-   run_gui.cmd
+   run_desktop.cmd
    ```
 
 2. **Click "📄 Search PDF"** to select your building plan PDF

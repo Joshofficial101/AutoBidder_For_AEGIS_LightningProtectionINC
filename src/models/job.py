@@ -124,6 +124,8 @@ class Job(BaseModel):
     scheduled_date: Optional[str] = None
     start_date: Optional[str] = None
     completion_date: Optional[str] = None
+    invoice_number: Optional[str] = None
+    invoice_date: Optional[str] = None
     
     # Crew assignment (JSON array of worker names/IDs)
     assigned_crew: Optional[str] = None  # Stored as JSON string in DB

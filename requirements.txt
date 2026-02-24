@@ -10,6 +10,7 @@ openpyxl>=3.1.0
 
 # PDF handling (reading spec PDFs)
 pdfplumber>=0.10.0
+pdfminer-six>=20251230    # Security floor for known pdfminer vulnerabilities
 
 # OPTIMIZED PDF parsing (10x faster than pdfplumber)
 PyMuPDF>=1.24.0          # Fast PDF text extraction for CAD drawings
@@ -17,8 +18,8 @@ PyMuPDF>=1.24.0          # Fast PDF text extraction for CAD drawings
 # PDF generation (for submittal packages)
 reportlab>=4.0.0
 
-# GUI framework
-flet>=0.28.2
+# Security + auth
+cryptography>=46.0.5      # Security floor for known ECC validation issue
 
 # JavaScript execution for validation
 PyExecJS>=1.5.1
@@ -30,7 +31,7 @@ bcrypt>=4.1.2
 # These enable OCR and computer vision features
 pdf2image>=1.16.0        # Convert PDF pages to images
 pytesseract>=0.3.10      # OCR text extraction from drawings
-Pillow>=10.0.0           # Image processing
+Pillow>=12.1.1           # Security floor for known PSD parsing issue
 opencv-python>=4.8.0     # Computer vision for line/shape detection
 numpy>=1.24.0            # Required by opencv
 

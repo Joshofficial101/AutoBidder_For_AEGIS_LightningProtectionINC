@@ -23,12 +23,12 @@ This guide explains how to test the JavaScript-based real-time validation featur
 
 1. **Start the GUI:**
    ```bash
-   .venv\Scripts\python.exe -m src.gui.run_gui
+   run_desktop.cmd
    ```
    
    Or use the batch file:
    ```bash
-   run_gui.cmd
+   run_desktop.cmd
    ```
 
 2. **Login:**

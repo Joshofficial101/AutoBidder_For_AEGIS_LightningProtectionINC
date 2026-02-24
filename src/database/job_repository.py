@@ -81,6 +81,7 @@ class JobRepository:
         SELECT 
             j.job_id, j.bid_id, j.user_id, j.status,
             j.scheduled_date, j.start_date, j.completion_date,
+            j.invoice_number, j.invoice_date,
             j.assigned_crew, j.notes, j.created_at, j.updated_at,
             p.name as project_name, b.final_amount as bid_amount
         FROM Jobs j
@@ -102,12 +103,14 @@ class JobRepository:
             scheduled_date=row[4],
             start_date=row[5],
             completion_date=row[6],
-            assigned_crew=row[7],
-            notes=row[8],
-            created_at=row[9],
-            updated_at=row[10],
-            project_name=row[11],
-            bid_amount=row[12]
+            invoice_number=row[7],
+            invoice_date=row[8],
+            assigned_crew=row[9],
+            notes=row[10],
+            created_at=row[11],
+            updated_at=row[12],
+            project_name=row[13],
+            bid_amount=row[14]
         )
         
         # Load related data
@@ -131,6 +134,7 @@ class JobRepository:
         SELECT 
             j.job_id, j.bid_id, j.user_id, j.status,
             j.scheduled_date, j.start_date, j.completion_date,
+            j.invoice_number, j.invoice_date,
             j.assigned_crew, j.notes, j.created_at, j.updated_at,
             p.name as project_name, b.final_amount as bid_amount
         FROM Jobs j
@@ -158,6 +162,7 @@ class JobRepository:
         SELECT 
             j.job_id, j.bid_id, j.user_id, j.status,
             j.scheduled_date, j.start_date, j.completion_date,
+            j.invoice_number, j.invoice_date,
             j.assigned_crew, j.notes, j.created_at, j.updated_at,
             p.name as project_name, b.final_amount as bid_amount
         FROM Jobs j
@@ -185,6 +190,7 @@ class JobRepository:
         SELECT 
             j.job_id, j.bid_id, j.user_id, j.status,
             j.scheduled_date, j.start_date, j.completion_date,
+            j.invoice_number, j.invoice_date,
             j.assigned_crew, j.notes, j.created_at, j.updated_at,
             p.name as project_name, b.final_amount as bid_amount
         FROM Jobs j
@@ -218,6 +224,7 @@ class JobRepository:
         SELECT 
             j.job_id, j.bid_id, j.user_id, j.status,
             j.scheduled_date, j.start_date, j.completion_date,
+            j.invoice_number, j.invoice_date,
             j.assigned_crew, j.notes, j.created_at, j.updated_at,
             p.name as project_name, b.final_amount as bid_amount
         FROM Jobs j
@@ -246,6 +253,7 @@ class JobRepository:
         SELECT 
             j.job_id, j.bid_id, j.user_id, j.status,
             j.scheduled_date, j.start_date, j.completion_date,
+            j.invoice_number, j.invoice_date,
             j.assigned_crew, j.notes, j.created_at, j.updated_at,
             p.name as project_name, b.final_amount as bid_amount
         FROM Jobs j
@@ -282,6 +290,7 @@ class JobRepository:
         SELECT 
             j.job_id, j.bid_id, j.user_id, j.status,
             j.scheduled_date, j.start_date, j.completion_date,
+            j.invoice_number, j.invoice_date,
             j.assigned_crew, j.notes, j.created_at, j.updated_at,
             p.name as project_name, b.final_amount as bid_amount
         FROM Jobs j
@@ -701,10 +710,12 @@ class JobRepository:
             scheduled_date=row[4],
             start_date=row[5],
             completion_date=row[6],
-            assigned_crew=row[7],
-            notes=row[8],
-            created_at=row[9],
-            updated_at=row[10],
-            project_name=row[11],
-            bid_amount=row[12]
+            invoice_number=row[7],
+            invoice_date=row[8],
+            assigned_crew=row[9],
+            notes=row[10],
+            created_at=row[11],
+            updated_at=row[12],
+            project_name=row[13],
+            bid_amount=row[14],
         )

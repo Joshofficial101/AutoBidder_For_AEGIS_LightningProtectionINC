@@ -129,7 +129,7 @@ The system is ready to use!
 
 **To run the application**:
 ```
-run_gui.cmd
+run_desktop.cmd
 ```
 
 **Key Features Now Working**:

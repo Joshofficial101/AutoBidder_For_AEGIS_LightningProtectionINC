@@ -348,16 +348,97 @@ class ExcelBidExporter:
             ws.cell(row=row, column=2, value=bid.tools_rental_cost)
             ws.cell(row=row, column=2).number_format = '$#,##0.00'
             row += 1
-        
+
+        # User-defined custom pricing boxes from bidding profile
+        custom_entries = getattr(bid, "custom_pricing_adjustment_entries", [])
+        if custom_entries:
+            for entry in custom_entries:
+                mode = entry.get("mode", "$")
+                value = entry.get("value", 0.0)
+                if mode == "%":
+                    label = f"Custom: {entry.get('name', 'Adjustment')} ({value}% of subtotal):"
+                else:
+                    label = f"Custom: {entry.get('name', 'Adjustment')}:"
+                ws.cell(row=row, column=1, value=label)
+                ws.cell(row=row, column=2, value=entry.get("applied_amount", 0.0))
+                ws.cell(row=row, column=2).number_format = '$#,##0.00'
+                row += 1
+
+        # Floor/rounding adjustments tied to bidding profile settings
+        minimum_floor_adjustment = float(getattr(bid, "minimum_floor_adjustment", 0.0) or 0.0)
+        rounding_adjustment = float(getattr(bid, "rounding_adjustment", 0.0) or 0.0)
+        final_before_floor_rounding = float(
+            getattr(bid, "final_before_floor_rounding", bid.final_bid_amount) or bid.final_bid_amount
+        )
+        adjusted_final_bid_amount = float(
+            getattr(bid, "adjusted_final_bid_amount", bid.final_bid_amount) or bid.final_bid_amount
+        )
+
+        if minimum_floor_adjustment > 0:
+            ws.cell(row=row, column=1, value="Minimum Bid Floor Adjustment:")
+            ws.cell(row=row, column=2, value=minimum_floor_adjustment)
+            ws.cell(row=row, column=2).number_format = '$#,##0.00'
+            row += 1
+        if rounding_adjustment != 0:
+            ws.cell(row=row, column=1, value="Rounding Adjustment:")
+            ws.cell(row=row, column=2, value=rounding_adjustment)
+            ws.cell(row=row, column=2).number_format = '$#,##0.00'
+            row += 1
+
         row += 1
+
+        if custom_entries or minimum_floor_adjustment > 0 or rounding_adjustment != 0:
+            ws.cell(row=row, column=1, value="Final Before Floor/Rounding:")
+            ws.cell(row=row, column=2, value=final_before_floor_rounding)
+            ws.cell(row=row, column=2).number_format = '$#,##0.00'
+            ws.cell(row=row, column=1).font = Font(bold=True)
+            ws.cell(row=row, column=2).font = Font(bold=True)
+            row += 2
 
         # FINAL BID
         ws.cell(row=row, column=1, value="FINAL BID AMOUNT:")
-        ws.cell(row=row, column=2, value=bid.final_bid_amount)
+        ws.cell(row=row, column=2, value=adjusted_final_bid_amount)
         ws.cell(row=row, column=1).font = Font(size=14, bold=True)
         ws.cell(row=row, column=2).font = Font(size=14, bold=True)
         ws.cell(row=row, column=2).number_format = '$#,##0.00'
         ws.cell(row=row, column=2).fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
+        row += 2
+
+        # Profile settings snapshot so exported workbook reflects user-configured pricing logic
+        ws.cell(row=row, column=1, value="BIDDING PROFILE SETTINGS APPLIED:")
+        ws.cell(row=row, column=1).font = Font(bold=True, size=11)
+        row += 1
+
+        ws.cell(row=row, column=1, value="  Minimum Bid Floor Setting:")
+        ws.cell(row=row, column=2, value=float(getattr(bid, "minimum_bid_amount", 0.0) or 0.0))
+        ws.cell(row=row, column=2).number_format = '$#,##0.00'
+        row += 1
+
+        ws.cell(row=row, column=1, value="  Rounding Mode:")
+        ws.cell(row=row, column=2, value=str(getattr(bid, "normalized_rounding_mode", "none")))
+        row += 1
+
+        ws.cell(row=row, column=1, value="  Rounding Increment:")
+        ws.cell(row=row, column=2, value=float(getattr(bid, "rounding_increment", 0.0) or 0.0))
+        ws.cell(row=row, column=2).number_format = '$#,##0.00'
+        row += 1
+
+        if custom_entries:
+            ws.cell(row=row, column=1, value="  Custom Pricing Boxes:")
+            ws.cell(row=row, column=1).font = Font(bold=True)
+            row += 1
+            for entry in custom_entries:
+                mode = entry.get("mode", "$")
+                value = entry.get("value", 0.0)
+                if mode == "%":
+                    value_display = f"{value}%"
+                else:
+                    value_display = f"${value:,.2f}"
+                ws.cell(row=row, column=1, value=f"    {entry.get('name', 'Adjustment')}")
+                ws.cell(row=row, column=2, value=value_display)
+                ws.cell(row=row, column=3, value=entry.get("applied_amount", 0.0))
+                ws.cell(row=row, column=3).number_format = '$#,##0.00'
+                row += 1
 
         # Column widths
         ws.column_dimensions['A'].width = 30

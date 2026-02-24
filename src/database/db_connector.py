@@ -1,7 +1,10 @@
 import sqlite3
 import threading
 from pathlib import Path
-from typing import List, Tuple, Any, Optional
+from typing import List, Tuple, Any, Optional, Dict
+
+from src.database.backup_manager import SQLiteBackupManager
+from src.database.migration_manager import MigrationManager
 
 class DBConnector:
     """
@@ -10,6 +13,10 @@ class DBConnector:
     
     # Path to the database file (relative to the project root's src folder)
     DB_PATH = Path(__file__).parent / "app.db"
+    BACKUP_DIR = DB_PATH.parent / "backups"
+
+    _maintenance_lock = threading.Lock()
+    _maintenance_ran = False
     
     # SQL to create all necessary tables based on the provided schema
     CREATE_TABLES_SQL = """
@@ -18,7 +25,17 @@ class DBConnector:
         username TEXT NOT NULL UNIQUE,
         email TEXT NOT NULL UNIQUE,
         password_hash TEXT NOT NULL,
+        recovery_code_hash TEXT,
+        recovery_code_updated_at TEXT,
         created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS AuthSecurity (
+        username TEXT PRIMARY KEY,
+        failed_attempts INTEGER NOT NULL DEFAULT 0,
+        locked_until TEXT,
+        last_failed_at TEXT,
+        updated_at TEXT NOT NULL
     );
     
     CREATE TABLE IF NOT EXISTS SourceDocuments (
@@ -160,6 +177,8 @@ class DBConnector:
         scheduled_date TEXT,
         start_date TEXT,
         completion_date TEXT,
+        invoice_number TEXT,
+        invoice_date TEXT,
         assigned_crew TEXT,
         notes TEXT,
         created_at TEXT NOT NULL,
@@ -235,65 +254,51 @@ class DBConnector:
             
             # Connect to the database (creates file if it doesn't exist)
             # Allow access from multiple threads; guard with a lock for safety.
-            self._connection = sqlite3.connect(self.DB_PATH, check_same_thread=False)
+            self._connection = sqlite3.connect(str(self.DB_PATH), check_same_thread=False)
             self._cursor = self._connection.cursor()
             self._cursor.execute("PRAGMA foreign_keys = ON;")
             
             # Execute schema creation script
             self._cursor.executescript(self.CREATE_TABLES_SQL)
             self._connection.commit()
-            
-            # --- Lightweight schema migration: drop customer_id from Projects ---
-            # NOTE: This keeps historical data but aligns schema with the
-            # "project-only" model until customer management is needed.
-            columns = [row[1] for row in self._cursor.execute("PRAGMA table_info(Projects);")]
-            if "customer_id" in columns:
-                self._cursor.execute("PRAGMA foreign_keys = OFF;")
-                self._cursor.executescript(
-                    """
-                    CREATE TABLE IF NOT EXISTS Projects_v2 (
-                        project_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        user_id INTEGER NOT NULL,
-                        name TEXT NOT NULL,
-                        building_height_ft REAL,
-                        roof_area_sqft REAL,
-                        perimeter_ft REAL,
-                        num_corners INTEGER,
-                        has_metal_roof INTEGER DEFAULT 0,
-                        preferred_material TEXT,
-                        created_at TEXT NOT NULL,
-                        updated_at TEXT NOT NULL,
-                        UNIQUE(user_id, name),
-                        FOREIGN KEY (user_id) REFERENCES Users (user_id)
-                    );
-                    INSERT INTO Projects_v2 (
-                        project_id, user_id, name, building_height_ft, roof_area_sqft, perimeter_ft,
-                        num_corners, has_metal_roof, preferred_material, created_at, updated_at
-                    )
-                    SELECT project_id, user_id, name, building_height_ft, roof_area_sqft, perimeter_ft,
-                           num_corners, has_metal_roof, preferred_material, created_at, updated_at
-                    FROM Projects;
-                    DROP TABLE Projects;
-                    ALTER TABLE Projects_v2 RENAME TO Projects;
-                    """
-                )
-                self._cursor.execute("PRAGMA foreign_keys = ON;")
-                self._connection.commit()
-            
-            # --- Schema migration: Add status tracking to Bids table ---
-            bid_columns = [row[1] for row in self._cursor.execute("PRAGMA table_info(Bids);")]
-            if "status" not in bid_columns:
-                print("Migrating Bids table to add status tracking...")
-                self._cursor.execute("ALTER TABLE Bids ADD COLUMN status TEXT DEFAULT 'draft';")
-                self._cursor.execute("ALTER TABLE Bids ADD COLUMN date_sent TEXT;")
-                self._cursor.execute("ALTER TABLE Bids ADD COLUMN date_responded TEXT;")
-                self._cursor.execute("ALTER TABLE Bids ADD COLUMN follow_up_date TEXT;")
-                self._connection.commit()
-                print("Bids table migration complete.")
+
+            self._run_startup_maintenance()
             
         except sqlite3.Error as e:
             print(f"Database error during initialization: {e}")
             raise
+
+    def _run_startup_maintenance(self) -> None:
+        """
+        Runs one-time maintenance per process:
+        - Applies pending migrations (with pre-migration backup)
+        - Creates daily backup snapshot
+        """
+        with DBConnector._maintenance_lock:
+            if DBConnector._maintenance_ran:
+                return
+
+            backup_manager = SQLiteBackupManager(self.DB_PATH, backup_dir=self.BACKUP_DIR)
+            migration_manager = MigrationManager(self._connection)
+            migration_manager.ensure_migration_table()
+
+            pending = migration_manager.pending_migrations()
+            if pending:
+                backup_path = backup_manager.create_backup(
+                    reason="pre_migration",
+                    source_connection=self._connection,
+                )
+                print(f"Database backup created before migrations: {backup_path}")
+                applied = migration_manager.apply_pending_migrations()
+                print(f"Applied DB migrations: {', '.join(applied)}")
+
+            daily_backup = backup_manager.create_daily_backup_if_due(
+                source_connection=self._connection,
+            )
+            if daily_backup:
+                print(f"Daily database backup created: {daily_backup}")
+
+            DBConnector._maintenance_ran = True
         
     def execute(self, sql: str, params: Tuple[Any, ...] = ()) -> sqlite3.Cursor:
         """Executes a non-query SQL statement (e.g., INSERT, UPDATE, DELETE)."""
@@ -327,19 +332,94 @@ class DBConnector:
             self._connection = None
             self._cursor = None
 
-    def create_user(self, username: str, email: str, password_hash: str) -> Optional[int]:
+    @classmethod
+    def migration_status(cls) -> Dict[str, Any]:
+        """Returns applied and pending migration IDs."""
+        cls.DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(cls.DB_PATH))
+        try:
+            conn.execute("PRAGMA foreign_keys = ON;")
+            conn.executescript(cls.CREATE_TABLES_SQL)
+            conn.commit()
+
+            migration_manager = MigrationManager(conn)
+            migration_manager.ensure_migration_table()
+            applied = migration_manager.applied_ids()
+            pending = [m.migration_id for m in migration_manager.pending_migrations()]
+            return {"applied": applied, "pending": pending}
+        finally:
+            conn.close()
+
+    @classmethod
+    def create_backup(cls, reason: str = "manual") -> Path:
+        """Creates a safe database backup snapshot."""
+        cls.DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        backup_manager = SQLiteBackupManager(cls.DB_PATH, backup_dir=cls.BACKUP_DIR)
+        return backup_manager.create_backup(reason=reason)
+
+    @classmethod
+    def rollback_last_migrations(cls, steps: int = 1) -> List[str]:
+        """
+        Rolls back the most recently applied migrations.
+
+        A safety backup is created before rollback.
+        """
+        if steps < 1:
+            return []
+
+        cls.DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(cls.DB_PATH))
+        try:
+            conn.execute("PRAGMA foreign_keys = ON;")
+            conn.executescript(cls.CREATE_TABLES_SQL)
+            conn.commit()
+
+            backup_manager = SQLiteBackupManager(cls.DB_PATH, backup_dir=cls.BACKUP_DIR)
+            backup_path = backup_manager.create_backup(reason="pre_rollback", source_connection=conn)
+            print(f"Database backup created before rollback: {backup_path}")
+
+            migration_manager = MigrationManager(conn)
+            migration_manager.ensure_migration_table()
+            return migration_manager.rollback_last(steps=steps)
+        finally:
+            conn.close()
+
+    def create_user(
+        self,
+        username: str,
+        email: str,
+        password_hash: str,
+        recovery_code_hash: Optional[str] = None,
+    ) -> Optional[int]:
         """Inserts a new user into the Users table and returns their user_id."""
         from datetime import datetime
         
         sql = """
-        INSERT INTO Users (username, email, password_hash, created_at) 
-        VALUES (?, ?, ?, ?);
+        INSERT INTO Users (
+            username,
+            email,
+            password_hash,
+            recovery_code_hash,
+            recovery_code_updated_at,
+            created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?);
         """
         # Get current timestamp for created_at
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
         try:
-            self.execute(sql, (username, email, password_hash, timestamp))
+            self.execute(
+                sql,
+                (
+                    username,
+                    email,
+                    password_hash,
+                    recovery_code_hash,
+                    timestamp if recovery_code_hash else None,
+                    timestamp,
+                ),
+            )
             # Return the ID of the last inserted row
             return self._cursor.lastrowid
         
@@ -356,6 +436,67 @@ class DBConnector:
         """Retrieves a user's details by username."""
         sql = "SELECT user_id, username, password_hash FROM Users WHERE username = ?;"
         return self.fetchone(sql, (username,))
+
+    def get_user_recovery_by_username(self, username: str) -> Optional[tuple]:
+        """Retrieves user recovery details by username."""
+        sql = """
+        SELECT user_id, username, recovery_code_hash
+        FROM Users
+        WHERE username = ?;
+        """
+        return self.fetchone(sql, (username,))
+
+    def update_user_password_and_recovery(
+        self,
+        user_id: int,
+        password_hash: str,
+        recovery_code_hash: str,
+        recovery_code_updated_at: str,
+    ) -> None:
+        """Updates user password hash and rotates backup recovery code hash."""
+        sql = """
+        UPDATE Users
+        SET
+            password_hash = ?,
+            recovery_code_hash = ?,
+            recovery_code_updated_at = ?
+        WHERE user_id = ?;
+        """
+        self.execute(sql, (password_hash, recovery_code_hash, recovery_code_updated_at, user_id))
+
+    def get_auth_security_by_username(self, username: str) -> Optional[tuple]:
+        """Retrieves auth security state by username."""
+        sql = """
+        SELECT failed_attempts, locked_until, last_failed_at
+        FROM AuthSecurity
+        WHERE username = ?;
+        """
+        return self.fetchone(sql, (username,))
+
+    def upsert_auth_security(
+        self,
+        username: str,
+        failed_attempts: int,
+        locked_until: Optional[str],
+        last_failed_at: str,
+        updated_at: str,
+    ) -> None:
+        """Creates or updates auth security state for a username."""
+        sql = """
+        INSERT INTO AuthSecurity (username, failed_attempts, locked_until, last_failed_at, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(username) DO UPDATE SET
+            failed_attempts = excluded.failed_attempts,
+            locked_until = excluded.locked_until,
+            last_failed_at = excluded.last_failed_at,
+            updated_at = excluded.updated_at;
+        """
+        self.execute(sql, (username, failed_attempts, locked_until, last_failed_at, updated_at))
+
+    def clear_auth_security(self, username: str) -> None:
+        """Clears auth security state for a username after successful login."""
+        sql = "DELETE FROM AuthSecurity WHERE username = ?;"
+        self.execute(sql, (username,))
 
 # Optional: Simple test execution for sanity check
 if __name__ == '__main__':

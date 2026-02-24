@@ -1,5 +1,6 @@
 @echo off
-REM --- Windows Setup Script for LightningBid ---
+setlocal
+REM --- Windows Setup Script for LightningBid (Python backend deps) ---
 
 echo Checking for Python...
 python --version >nul 2>nul
@@ -10,25 +11,36 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo Creating Python Virtual Environment...
-python -m venv .venv
+if not exist ".venv\Scripts\python.exe" (
+    echo Creating Python Virtual Environment...
+    python -m venv .venv
+) else (
+    echo Virtual environment already exists.
+)
 
 echo Activating Virtual Environment...
 call .venv\Scripts\activate.bat
 
-echo Installing dependencies from requirements.txt...
+echo Upgrading pip...
+python -m pip install --upgrade pip
+
+echo Installing core dependencies from requirements.txt...
 pip install -r requirements.txt
 
-REM Grant execution permission to the run script (not needed for .cmd, but good practice for .ps1 if used)
-REM We will just rely on calling the run script directly.
+if exist "api_local\requirements.txt" (
+    echo Installing API dependencies from api_local\requirements.txt...
+    pip install -r api_local\requirements.txt
+)
 
 echo.
 echo ====================================
 echo SETUP COMPLETE!
-echo Run the application next time with: run_gui.cmd
+echo Start the desktop app with: run_desktop.cmd
+echo (Requires Node.js and Rust toolchain for Tauri development.)
 echo ====================================
 
 REM Deactivate the environment after setup
 call .venv\Scripts\deactivate.bat
 
 pause
+endlocal

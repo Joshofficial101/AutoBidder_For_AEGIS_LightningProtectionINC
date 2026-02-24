@@ -1,46 +1,47 @@
-README.md: LightningBid - Setup Guide
+# LightningBid
 
-This guide provides the necessary steps to install dependencies and run the LightningBid application on Windows Systems
-Prerequisites
+React + Tauri desktop application with a local FastAPI backend for lightning protection bid workflows.
 
-You must have Python 3.9 or newer and Git (if cloning) installed on your system.
-1. Project Setup (First Run Only)
+## Current Stack
 
-You have two options to get the code:
-Option A: Clone the Repository (Recommended for Development)
+- Desktop shell: `desktop_app/src-tauri` (Tauri)
+- Frontend UI: `desktop_app/frontend` (React + Vite + TypeScript)
+- Local backend API: `api_local` (FastAPI)
+- Shared business logic: `src` (calculators, parsers, exporters, models)
 
-This method automatically sets up version control for pushing changes.
+## Project Layout
 
-    Clone the Repository:
+- `api_local/` API routers, schemas, and services
+- `desktop_app/` desktop shell, sidecar wiring, frontend
+- `src/` core domain logic reused by API services
+- `docs/` architecture and feature docs
+- `tests/` utility and integration test scripts
+- `tools/` operational scripts (security scan, etc.)
 
-    git clone https://github.com/Joshofficial101/AutoBidder_For_AEGIS_LightningProtectionINC.git
-    cd AutoBidder_For_AEGIS_LightningProtectionINC
-    git checkout Windows_Branch
+## Setup (Windows)
 
-Option B: Download ZIP File
+1. Install Python 3.9+, Node.js, and Rust toolchain (for Tauri).
+2. Run:
 
-This method is simpler for users who just need to run the application.
+```cmd
+setup.cmd
+```
 
-    Download and Unzip: Download the project as a `.zip` file from the GitHub branch and unzip it.
-    Navigate to Directory: Open your terminal and navigate into the project folder.
+## Launch Desktop App
 
-    cd path/to/AutoBidder_For_AEGIS_LightningProtectionINC-Windows_Branch
+```cmd
+run_desktop.cmd
+```
 
-Final Setup Steps (Required for both A and B)
+## Frontend-Only Build/Preview
 
-    Run the Setup Script: This script creates the virtual environment and installs all dependencies.
+```cmd
+run_frontend_safe.cmd
+```
 
-    setup.cmd
+## Notes
 
-2. Launching the Application
-
-Once the setup is complete, launch the GUI using the simplified script.
-
-run_gui.cmd
-
-3. Login Instructions
-
-The application will launch on the Login Screen.
-Action 	Required Fields 	Feedback
-Create Account 	Username, Password, Email 	Success/Failure is displayed in a modal dialog window.
-Sign In 	Username, Password 	Success proceeds to the main bidding window. Failure shows an error dialog.
+- Legacy Flet UI files were removed; React+Tauri is the active UI path.
+- Structure reference: `docs/PROJECT_STRUCTURE.md`
+- API documentation: `api_local/docs/API_V1.md`
+- Security/observability: `docs/SECURITY_OBSERVABILITY.md`

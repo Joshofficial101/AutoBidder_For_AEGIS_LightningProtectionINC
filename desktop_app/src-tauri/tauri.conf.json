@@ -1,0 +1,41 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "LightningBid",
+  "version": "0.1.0",
+  "identifier": "com.lightningbid.desktop",
+  "build": {
+    "beforeDevCommand": "cd frontend && npm run dev",
+    "beforeBuildCommand": "cd frontend && npm run build",
+    "devUrl": "http://127.0.0.1:5173",
+    "frontendDist": "../frontend/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "LightningBid",
+        "width": 1280,
+        "height": 860,
+        "minWidth": 1100,
+        "minHeight": 700,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["msi"],
+    "icon": ["icons/icon.ico"],
+    "externalBin": ["../sidecar/lightningbid-api"],
+    "windows": {
+      "wix": {
+        "upgradeCode": "12345678-1234-1234-1234-1234567890ab"
+      },
+      "webviewInstallMode": {
+        "type": "embedBootstrapper"
+      }
+    }
+  }
+}

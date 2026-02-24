@@ -1,17 +1,22 @@
 .venv/
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
 data/outputs/
 *.log
 .idea/
 .vscode/
-/nul
+.DS_Store
+Thumbs.db
 
 # Build artifacts
 build/
 dist/
 *.spec
 *.egg-info/
+*.tsbuildinfo
+!api_local/packaging/lightningbid-api.spec
 
 # PDF Processing Tools (installed locally)
 poppler/
@@ -22,3 +27,25 @@ test_*.py
 check_*.py
 install_*.py
 *_installer.exe
+
+# Local SQLite backup artifacts
+src/database/backups/
+src/database/*.db-wal
+src/database/*.db-shm
+src/database/*.db-journal
+
+# Local runtime logs and scan reports
+logs/
+reports/
+
+# Temp and scratch scripts
+_tmp_*.cmd
+
+# Node/Tauri artifacts
+node_modules/
+desktop_app/node_modules/
+desktop_app/.npm-cache/
+desktop_app/frontend/node_modules/
+desktop_app/frontend/.npm-cache/
+desktop_app/frontend/dist/
+desktop_app/src-tauri/target/

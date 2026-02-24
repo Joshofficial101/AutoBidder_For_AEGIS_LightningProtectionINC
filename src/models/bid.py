@@ -5,6 +5,7 @@ These classes represent the actual bid - materials needed, costs, and final pric
 Think of this as the "shopping list" with prices attached.
 """
 
+import math
 from pydantic import BaseModel, Field
 from typing import List, Optional
 from src.models.items import PriceItem
@@ -55,6 +56,19 @@ class BidSection(BaseModel):
         return self.total_material + self.total_labor
 
 
+class CustomPricingAdjustment(BaseModel):
+    """User-defined pricing adjustment from bidding profile settings."""
+
+    adjustment_id: Optional[str] = None
+    name: str
+    mode: str = "$"  # "$" or "%"
+    value: float = 0.0
+
+    @property
+    def normalized_mode(self) -> str:
+        return "%" if self.mode == "%" else "$"
+
+
 class Bid(BaseModel):
     """
     Complete bid for a lightning protection project.
@@ -84,6 +98,10 @@ class Bid(BaseModel):
     tools_rental_type: str = "$"       # Tools & rental type: "$" (flat) or "%" (percentage)
     shipping_amount: float = 0.0       # Shipping cost (flat dollar amount)
     use_tax_pct: float = 0.0           # Use tax percentage (applied to materials + shipping only)
+    minimum_bid_amount: float = 0.0
+    rounding_increment: float = 0.0
+    rounding_mode: str = "none"  # none | nearest | up | down
+    custom_pricing_adjustments: List[CustomPricingAdjustment] = Field(default_factory=list)
 
     @property
     def subtotal_material(self) -> float:
@@ -140,3 +158,68 @@ class Bid(BaseModel):
         profit = self.subtotal * (self.profit_pct / 100)
         # Add flat/percentage additional costs
         return base_with_markup + overhead + profit + self.commission_amount + self.tools_rental_cost
+
+    @property
+    def custom_pricing_adjustment_entries(self) -> List[dict]:
+        """Computed custom adjustment entries with applied dollar amounts."""
+        entries: List[dict] = []
+        for item in self.custom_pricing_adjustments:
+            mode = item.normalized_mode
+            value = max(0.0, float(item.value or 0.0))
+            applied_amount = self.subtotal * (value / 100.0) if mode == "%" else value
+            entries.append(
+                {
+                    "adjustment_id": item.adjustment_id,
+                    "name": item.name,
+                    "mode": mode,
+                    "value": value,
+                    "applied_amount": applied_amount,
+                }
+            )
+        return entries
+
+    @property
+    def custom_pricing_adjustments_total(self) -> float:
+        return sum(float(item["applied_amount"]) for item in self.custom_pricing_adjustment_entries)
+
+    @property
+    def final_before_floor_rounding(self) -> float:
+        return self.final_bid_amount + self.custom_pricing_adjustments_total
+
+    @property
+    def minimum_floor_adjustment(self) -> float:
+        minimum = max(0.0, float(self.minimum_bid_amount or 0.0))
+        return max(0.0, minimum - self.final_before_floor_rounding)
+
+    @property
+    def amount_after_minimum_floor(self) -> float:
+        return self.final_before_floor_rounding + self.minimum_floor_adjustment
+
+    @property
+    def normalized_rounding_mode(self) -> str:
+        mode = (self.rounding_mode or "none").strip().lower()
+        if mode in {"nearest", "up", "down"}:
+            return mode
+        return "none"
+
+    @property
+    def rounding_adjustment(self) -> float:
+        mode = self.normalized_rounding_mode
+        increment = max(0.0, float(self.rounding_increment or 0.0))
+        if mode == "none" or increment <= 0:
+            return 0.0
+
+        amount = self.amount_after_minimum_floor
+        units = amount / increment
+        if mode == "nearest":
+            rounded_units = round(units)
+        elif mode == "up":
+            rounded_units = math.ceil(units)
+        else:
+            rounded_units = math.floor(units)
+        rounded_amount = rounded_units * increment
+        return rounded_amount - amount
+
+    @property
+    def adjusted_final_bid_amount(self) -> float:
+        return self.amount_after_minimum_floor + self.rounding_adjustment
