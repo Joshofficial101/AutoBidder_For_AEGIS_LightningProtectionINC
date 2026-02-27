@@ -5,6 +5,8 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, FilePath, field_validator
 
+from app.settings import MAX_EXCEL_BASE64_CHARS, MAX_PDF_BASE64_CHARS
+
 
 class ApiModel(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
@@ -109,7 +111,7 @@ class BidPreviewRequest(ApiModel):
 
 class BidPreviewBase64Request(ApiModel):
     file_name: Optional[str] = Field(default=None, min_length=1, max_length=255)
-    pricing_file_base64: str = Field(min_length=1)
+    pricing_file_base64: str = Field(min_length=1, max_length=MAX_EXCEL_BASE64_CHARS)
     pricing_sheet: Optional[str] = Field(default=None, min_length=1, max_length=120)
     compliance_code: ComplianceCode = ComplianceCode.DUAL
     project_data: Dict[str, Any]
@@ -239,7 +241,7 @@ class ParsePdfResponse(ApiModel):
 
 class ParsePdfBase64Request(ApiModel):
     file_name: Optional[str] = Field(default=None, min_length=1, max_length=255)
-    file_bytes_base64: str = Field(min_length=1)
+    file_bytes_base64: str = Field(min_length=1, max_length=MAX_PDF_BASE64_CHARS)
 
     model_config = ConfigDict(
         extra="forbid",
@@ -312,7 +314,6 @@ class JobsBoardResponse(ApiModel):
 
 
 class JobStatusUpdateRequest(ApiModel):
-    user_id: Optional[int] = Field(default=None, ge=1)
     new_status: JobBoardStatus
     start_date: Optional[date] = None
     completion_date: Optional[date] = None
@@ -328,7 +329,6 @@ class JobStatusUpdateResponse(ApiModel):
 
 
 class JobApproveRequest(ApiModel):
-    user_id: Optional[int] = Field(default=None, ge=1)
     scheduled_date: date
     assigned_crew: List[str] = Field(default_factory=list)
     note: Optional[str] = Field(default=None, max_length=500)
@@ -382,7 +382,22 @@ class ResetPasswordBackupRequest(ApiModel):
     new_password: str = Field(min_length=12, max_length=128)
 
 
+class VerifyPasswordRequest(ApiModel):
+    password: str = Field(min_length=1, max_length=256)
+
+
+class VerifyPasswordResponse(ApiModel):
+    valid: bool
+
+
 class AuthUserResponse(ApiModel):
     user_id: int
     username: str
+    access_token: str
+    token_type: str = "bearer"
+    expires_at: str
     backup_code: Optional[str] = None
+
+
+class AuthLogoutResponse(ApiModel):
+    status: str = "ok"

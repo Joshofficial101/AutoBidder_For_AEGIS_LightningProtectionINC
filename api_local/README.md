@@ -56,3 +56,25 @@ See `api_local/docs/API_V1.md` for request/response examples.
 - Runs DB maintenance at startup (daily backup + pending migrations).
 - Adds structured JSON logs with per-request correlation IDs (`X-Correlation-ID`).
 - Writes central log stream to `logs/lightningbid-api.jsonl` and critical alerts to `logs/critical-alerts.jsonl`.
+
+## Upload Size Limits
+
+Large PDF/Excel payloads are now capped to protect local memory and API availability.
+
+Defaults:
+- PDF max: `35 MB`
+- Excel max: `15 MB`
+
+Config knobs (environment variables):
+- `LIGHTNINGBID_MAX_PDF_MB`
+- `LIGHTNINGBID_MAX_EXCEL_MB`
+
+Defined in:
+- `api_local/app/settings.py`
+
+Example (PowerShell):
+```powershell
+$env:LIGHTNINGBID_MAX_PDF_MB="45"
+$env:LIGHTNINGBID_MAX_EXCEL_MB="20"
+python run_api.py
+```

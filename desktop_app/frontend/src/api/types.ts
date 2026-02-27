@@ -20,7 +20,14 @@ export type HealthReadinessResponse = {
 export type AuthUser = {
   user_id: number;
   username: string;
+  access_token: string;
+  token_type: string;
+  expires_at: string;
   backup_code?: string;
+};
+
+export type AuthLogoutResponse = {
+  status: string;
 };
 
 export type LoginRequest = {
@@ -38,6 +45,14 @@ export type ResetPasswordBackupRequest = {
   username: string;
   backup_code: string;
   new_password: string;
+};
+
+export type VerifyPasswordRequest = {
+  password: string;
+};
+
+export type VerifyPasswordResponse = {
+  valid: boolean;
 };
 
 export type BidPreviewRequest = {
@@ -196,7 +211,6 @@ export type JobsBoardResponse = {
 };
 
 export type JobStatusUpdateRequest = {
-  user_id?: number;
   new_status: JobBoardStatus;
   start_date?: string;
   completion_date?: string;
@@ -212,7 +226,6 @@ export type JobStatusUpdateResponse = {
 };
 
 export type JobApproveRequest = {
-  user_id?: number;
   scheduled_date: string;
   assigned_crew?: string[];
   note?: string;

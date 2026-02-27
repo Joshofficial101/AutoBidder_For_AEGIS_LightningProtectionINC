@@ -21,6 +21,9 @@ set "ALL_PROXY="
 set "GIT_HTTP_PROXY="
 set "GIT_HTTPS_PROXY="
 set "LIGHTNINGBID_LOG_DIR=%ROOT_DIR%logs"
+REM Optional API upload limits (MB). Uncomment and adjust if needed.
+REM set "LIGHTNINGBID_MAX_PDF_MB=35"
+REM set "LIGHTNINGBID_MAX_EXCEL_MB=15"
 
 REM Ensure Node and Cargo are available in this process
 if exist "C:\Program Files\nodejs\npx.cmd" set "PATH=C:\Program Files\nodejs;%PATH%"

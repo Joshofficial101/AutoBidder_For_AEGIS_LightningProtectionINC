@@ -16,6 +16,21 @@ from typing import List, Optional, Dict, Tuple
 from src.models.items import PriceItem
 
 
+def _resolve_sheet_name(requested_sheet: str, available_sheets: List[str]) -> Optional[str]:
+    normalized_requested = (requested_sheet or "").strip()
+    if not normalized_requested:
+        return None
+
+    if normalized_requested in available_sheets:
+        return normalized_requested
+
+    for sheet in available_sheets:
+        if sheet.strip().lower() == normalized_requested.lower():
+            return sheet
+
+    return None
+
+
 def _find_header_row(ws, max_rows_to_check: int = 20) -> Optional[int]:
     """
     Find the row that contains column headers.
@@ -182,24 +197,39 @@ def load_pricing_from_excel(path: Path, sheet_name: Optional[str] = None,
     all_items: List[PriceItem] = []
     sheets_tried = []
     
+    requested_sheet = (sheet_name or "").strip() or None
+    available_sheets: List[str] = []
+    requested_sheet_missing = False
+    workbook_open_error: Optional[str] = None
+
+    try:
+        wb = openpyxl.load_workbook(path, read_only=True)
+        available_sheets = list(wb.sheetnames)
+        wb.close()
+    except Exception as exc:
+        workbook_open_error = str(exc)
+
     # Get list of sheets to try
-    if sheet_name:
-        sheets_to_try = [sheet_name]
+    if requested_sheet:
+        resolved_sheet = _resolve_sheet_name(requested_sheet, available_sheets) if available_sheets else None
+        if resolved_sheet:
+            sheets_to_try = [resolved_sheet]
+        elif available_sheets:
+            # Sheet name did not match; fall back to all sheets instead of hard failing.
+            requested_sheet_missing = True
+            sheets_to_try = available_sheets
+        else:
+            sheets_to_try = [requested_sheet]
     elif try_all_sheets:
-        try:
-            wb = openpyxl.load_workbook(path, read_only=True)
-            sheets_to_try = wb.sheetnames
-            wb.close()
-        except Exception:
-            sheets_to_try = [None]  # Try default sheet
+        sheets_to_try = available_sheets or [None]  # Try default sheet if workbook metadata read fails.
     else:
         sheets_to_try = [None]
     
     # Try each sheet
     for current_sheet in sheets_to_try:
+        sheets_tried.append(current_sheet or "default")
         try:
             df = _load_sheet(path, sheet_name=current_sheet)
-            sheets_tried.append(current_sheet or "default")
             
             if df.empty:
                 print(f"DEBUG: Sheet '{current_sheet or 'default'}' is empty")
@@ -326,9 +356,24 @@ def load_pricing_from_excel(path: Path, sheet_name: Optional[str] = None,
             continue
     
     if not all_items:
+        tried_sheets_display = ", ".join(sheets_tried) if sheets_tried else "(none)"
+        extra_details: List[str] = []
+        if requested_sheet_missing:
+            extra_details.append(
+                f"Requested sheet '{requested_sheet}' was not found. "
+                f"Available sheets: {', '.join(available_sheets)}."
+            )
+        elif requested_sheet and available_sheets:
+            extra_details.append(
+                f"Requested sheet: {requested_sheet}. "
+                f"Available sheets: {', '.join(available_sheets)}."
+            )
+        if workbook_open_error and not available_sheets:
+            extra_details.append(f"Workbook open error: {workbook_open_error}.")
+        extra_line = ("\n" + "\n".join(extra_details)) if extra_details else ""
         raise ValueError(
             f"Could not extract pricing data from {path.name}.\n"
-            f"Tried sheets: {', '.join(sheets_tried)}\n"
+            f"Tried sheets: {tried_sheets_display}{extra_line}\n"
             f"Please check that the Excel file has columns for: Code/Part, Name/Description, and Price."
         )
     

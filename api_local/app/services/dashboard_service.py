@@ -49,29 +49,11 @@ def _job_to_item(job: Job) -> Dict[str, Any]:
     }
 
 
-def _resolve_user_id(repo: JobRepository, provided_user_id: Optional[int]) -> int:
-    if provided_user_id:
-        return provided_user_id
-
-    row = repo.db.fetchone(
-        "SELECT user_id FROM Jobs ORDER BY updated_at DESC, created_at DESC LIMIT 1;"
-    )
-    if row and row[0]:
-        return int(row[0])
-
-    row = repo.db.fetchone("SELECT user_id FROM Users ORDER BY user_id DESC LIMIT 1;")
-    if row and row[0]:
-        return int(row[0])
-
-    raise ValueError("No users found in local database.")
-
-
-def get_dashboard_summary(user_id: Optional[int] = None) -> Dict[str, Any]:
+def get_dashboard_summary(user_id: int) -> Dict[str, Any]:
     db = DBConnector()
     repo = JobRepository(db)
 
-    resolved_user_id = _resolve_user_id(repo, user_id)
-    all_jobs = repo.get_all_jobs(resolved_user_id)
+    all_jobs = repo.get_all_jobs(user_id)
 
     active_jobs = [j for j in all_jobs if j.status in ACTIVE_STATUSES]
     completed_jobs = [j for j in all_jobs if j.status in COMPLETED_STATUSES]
@@ -131,7 +113,7 @@ def get_dashboard_summary(user_id: Optional[int] = None) -> Dict[str, Any]:
     )[:8]
 
     return {
-        "user_id": resolved_user_id,
+        "user_id": user_id,
         "metrics": {
             "active_jobs": len(active_jobs),
             "completed_jobs": len(completed_jobs),

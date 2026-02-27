@@ -141,22 +141,43 @@ async def api_exception_handler(request: Request, exc: ApiException):
 
 @app.exception_handler(RequestValidationError)
 async def request_validation_handler(request: Request, exc: RequestValidationError):
+    validation_errors = exc.errors()
+    oversized_base64_fields = {"pricing_file_base64", "file_bytes_base64"}
+    has_payload_too_large_error = any(
+        (error.get("type") == "string_too_long")
+        and any(str(part) in oversized_base64_fields for part in error.get("loc", []))
+        for error in validation_errors
+    )
+
+    status_code = 413 if has_payload_too_large_error else 422
+    error_code = "PAYLOAD_TOO_LARGE" if has_payload_too_large_error else "VALIDATION_ERROR"
+    detail = (
+        "Request payload exceeded configured size limits."
+        if has_payload_too_large_error
+        else "One or more fields are invalid."
+    )
+    message = (
+        "Request payload too large."
+        if has_payload_too_large_error
+        else "Request validation failed."
+    )
+
     logger.warning(
         "request.validation_error",
         extra={
             "event": "request.validation_error",
-            "error_code": "VALIDATION_ERROR",
-            "status_code": 422,
+            "error_code": error_code,
+            "status_code": status_code,
             "path": request.url.path,
             "method": request.method,
         },
     )
     return build_error_response(
-        status_code=422,
-        code="VALIDATION_ERROR",
-        message="Request validation failed.",
-        detail="One or more fields are invalid.",
-        errors=exc.errors(),
+        status_code=status_code,
+        code=error_code,
+        message=message,
+        detail=detail,
+        errors=validation_errors,
         headers=_attach_correlation_header(request),
     )
 

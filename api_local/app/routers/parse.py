@@ -3,13 +3,20 @@ import binascii
 import tempfile
 from pathlib import Path
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
+from app.auth_dependencies import get_current_user
 from app.errors import ApiException, COMMON_ERROR_RESPONSES
+from app.file_limits import PayloadTooLargeError, assert_pdf_base64_within_limit
 from app.schemas import ParsePdfBase64Request, ParsePdfRequest, ParsePdfResponse
 from app.services.parsing_service import parse_pdf
+from app.temp_files import safe_unlink
 
-router = APIRouter(prefix="/api/v1/parse", tags=["parse"])
+router = APIRouter(
+    prefix="/api/v1/parse",
+    tags=["parse"],
+    dependencies=[Depends(get_current_user)],
+)
 
 
 @router.post("/pdf", response_model=ParsePdfResponse, responses=COMMON_ERROR_RESPONSES)
@@ -17,6 +24,13 @@ def parse_pdf_endpoint(payload: ParsePdfRequest) -> ParsePdfResponse:
     try:
         extracted = parse_pdf(str(payload.pdf_file_path))
         return ParsePdfResponse(extracted=extracted)
+    except PayloadTooLargeError as exc:
+        raise ApiException(
+            status_code=413,
+            code="PAYLOAD_TOO_LARGE",
+            message=str(exc),
+            detail=str(exc),
+        )
     except ValueError as exc:
         raise ApiException(
             status_code=400,
@@ -38,6 +52,7 @@ def parse_pdf_base64(payload: ParsePdfBase64Request) -> ParsePdfResponse:
     temp_path: Path | None = None
 
     try:
+        assert_pdf_base64_within_limit(payload.file_bytes_base64)
         pdf_bytes = base64.b64decode(payload.file_bytes_base64, validate=True)
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
             temp_file.write(pdf_bytes)
@@ -51,6 +66,13 @@ def parse_pdf_base64(payload: ParsePdfBase64Request) -> ParsePdfResponse:
             code="INVALID_BASE64",
             message="Invalid base64 PDF payload.",
             detail="file_bytes_base64 must be valid Base64 data.",
+        )
+    except PayloadTooLargeError as exc:
+        raise ApiException(
+            status_code=413,
+            code="PAYLOAD_TOO_LARGE",
+            message=str(exc),
+            detail=str(exc),
         )
     except ValueError as exc:
         raise ApiException(
@@ -66,5 +88,4 @@ def parse_pdf_base64(payload: ParsePdfBase64Request) -> ParsePdfResponse:
             message="PDF parse failed.",
         )
     finally:
-        if temp_path and temp_path.exists():
-            temp_path.unlink(missing_ok=True)
+        safe_unlink(temp_path)

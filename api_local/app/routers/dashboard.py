@@ -1,7 +1,6 @@
-from typing import Optional
+from fastapi import APIRouter, Depends
 
-from fastapi import APIRouter, Query
-
+from app.auth_dependencies import AuthenticatedUser, get_current_user
 from app.errors import ApiException, COMMON_ERROR_RESPONSES
 from app.schemas import DashboardSummaryResponse
 from app.services.dashboard_service import get_dashboard_summary
@@ -10,9 +9,9 @@ router = APIRouter(prefix="/api/v1/dashboard", tags=["dashboard"])
 
 
 @router.get("/summary", response_model=DashboardSummaryResponse, responses=COMMON_ERROR_RESPONSES)
-def summary(user_id: Optional[int] = Query(default=None, ge=1)) -> DashboardSummaryResponse:
+def summary(current_user: AuthenticatedUser = Depends(get_current_user)) -> DashboardSummaryResponse:
     try:
-        payload = get_dashboard_summary(user_id=user_id)
+        payload = get_dashboard_summary(user_id=current_user.user_id)
         return DashboardSummaryResponse(**payload)
     except ValueError as exc:
         raise ApiException(

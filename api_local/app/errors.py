@@ -21,6 +21,9 @@ class ApiException(Exception):
 
 COMMON_ERROR_RESPONSES = {
     400: {"model": ApiError, "description": "Bad request"},
+    401: {"model": ApiError, "description": "Unauthorized"},
+    403: {"model": ApiError, "description": "Forbidden"},
+    413: {"model": ApiError, "description": "Payload too large"},
     404: {"model": ApiError, "description": "Not found"},
     409: {"model": ApiError, "description": "Conflict"},
     422: {"model": ApiError, "description": "Validation error"},

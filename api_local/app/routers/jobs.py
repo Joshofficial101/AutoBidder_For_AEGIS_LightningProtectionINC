@@ -1,7 +1,6 @@
-from typing import Optional
+from fastapi import APIRouter, Depends, Path
 
-from fastapi import APIRouter, Path, Query
-
+from app.auth_dependencies import AuthenticatedUser, get_current_user
 from app.errors import ApiException, COMMON_ERROR_RESPONSES
 from app.schemas import (
     JobApproveRequest,
@@ -20,9 +19,9 @@ router = APIRouter(prefix="/api/v1/jobs", tags=["jobs"])
 
 
 @router.get("/board", response_model=JobsBoardResponse, responses=COMMON_ERROR_RESPONSES)
-def board(user_id: Optional[int] = Query(default=None, ge=1)) -> JobsBoardResponse:
+def board(current_user: AuthenticatedUser = Depends(get_current_user)) -> JobsBoardResponse:
     try:
-        payload = get_jobs_board(user_id=user_id)
+        payload = get_jobs_board(user_id=current_user.user_id)
         return JobsBoardResponse(**payload)
     except ValueError as exc:
         raise ApiException(
@@ -47,6 +46,7 @@ def board(user_id: Optional[int] = Query(default=None, ge=1)) -> JobsBoardRespon
 def update_status(
     payload: JobStatusUpdateRequest,
     job_id: int = Path(..., ge=1),
+    current_user: AuthenticatedUser = Depends(get_current_user),
 ) -> JobStatusUpdateResponse:
     try:
         start_date = payload.start_date.isoformat() if payload.start_date else None
@@ -55,7 +55,7 @@ def update_status(
         result = move_job_to_status(
             job_id=job_id,
             new_status=payload.new_status,
-            user_id=payload.user_id,
+            user_id=current_user.user_id,
             start_date=start_date,
             completion_date=completion_date,
             invoice_date=invoice_date,
@@ -87,11 +87,12 @@ def update_status(
 def approve_job(
     payload: JobApproveRequest,
     job_id: int = Path(..., ge=1),
+    current_user: AuthenticatedUser = Depends(get_current_user),
 ) -> JobApproveResponse:
     try:
         result = approve_and_schedule_job(
             job_id=job_id,
-            user_id=payload.user_id,
+            user_id=current_user.user_id,
             scheduled_date=payload.scheduled_date.isoformat(),
             assigned_crew=payload.assigned_crew,
             note=payload.note,

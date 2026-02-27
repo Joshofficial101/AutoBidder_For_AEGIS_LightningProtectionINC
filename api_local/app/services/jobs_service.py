@@ -21,23 +21,6 @@ NEXT_STATUS = {
 }
 
 
-def _resolve_user_id(repo: JobRepository, provided_user_id: Optional[int]) -> int:
-    if provided_user_id:
-        return provided_user_id
-
-    row = repo.db.fetchone(
-        "SELECT user_id FROM Jobs ORDER BY updated_at DESC, created_at DESC LIMIT 1;"
-    )
-    if row and row[0]:
-        return int(row[0])
-
-    row = repo.db.fetchone("SELECT user_id FROM Users ORDER BY user_id DESC LIMIT 1;")
-    if row and row[0]:
-        return int(row[0])
-
-    raise ValueError("No users found in local database.")
-
-
 def _job_to_item(job: Job) -> Dict[str, Any]:
     return {
         "job_id": int(job.job_id or 0),
@@ -90,12 +73,11 @@ def _validate_crew_list(assigned_crew: Optional[List[str]]) -> Optional[List[str
     return normalized
 
 
-def get_jobs_board(user_id: Optional[int] = None) -> Dict[str, Any]:
+def get_jobs_board(user_id: int) -> Dict[str, Any]:
     db = DBConnector()
     repo = JobRepository(db)
 
-    resolved_user_id = _resolve_user_id(repo, user_id)
-    jobs = repo.get_all_jobs(resolved_user_id)
+    jobs = repo.get_all_jobs(user_id)
 
     jobs_by_status = {status: [] for status in BOARD_STATUSES}
     for job in jobs:
@@ -103,7 +85,7 @@ def get_jobs_board(user_id: Optional[int] = None) -> Dict[str, Any]:
             jobs_by_status[job.status].append(_job_to_item(job))
 
     return {
-        "user_id": resolved_user_id,
+        "user_id": user_id,
         "awaiting_approval": jobs_by_status["awaiting_approval"],
         "scheduled": jobs_by_status["scheduled"],
         "in_progress": jobs_by_status["in_progress"],
@@ -116,7 +98,7 @@ def get_jobs_board(user_id: Optional[int] = None) -> Dict[str, Any]:
 def move_job_to_status(
     job_id: int,
     new_status: str,
-    user_id: Optional[int] = None,
+    user_id: int,
     start_date: Optional[str] = None,
     completion_date: Optional[str] = None,
     invoice_date: Optional[str] = None,
@@ -130,15 +112,14 @@ def move_job_to_status(
     db = DBConnector()
     repo = JobRepository(db)
 
-    resolved_user_id = _resolve_user_id(repo, user_id)
     current = repo.get_job(job_id)
     if not current:
         raise ValueError(f"Job {job_id} not found.")
-    if current.user_id != resolved_user_id:
-        raise ValueError(f"Job {job_id} does not belong to user {resolved_user_id}.")
+    if current.user_id != user_id:
+        raise ValueError(f"Job {job_id} does not belong to user {user_id}.")
 
     if current.status == new_status:
-        return {"user_id": resolved_user_id, "job": _job_to_item(current)}
+        return {"user_id": user_id, "job": _job_to_item(current)}
 
     if current.status == "awaiting_approval" and new_status == "scheduled":
         raise ValueError("Use the approve endpoint for awaiting_approval -> scheduled transition.")
@@ -195,7 +176,7 @@ def move_job_to_status(
             raise ValueError("invoice_date cannot be earlier than completion_date.")
 
     if normalized_crew:
-        repo.assign_crew(job_id=job_id, user_id=resolved_user_id, crew_members=normalized_crew)
+        repo.assign_crew(job_id=job_id, user_id=user_id, crew_members=normalized_crew)
 
     if normalized_start:
         repo.update_job_dates(job_id=job_id, start_date=normalized_start)
@@ -212,7 +193,7 @@ def move_job_to_status(
     transition_note = normalized_note or f"Status changed to {new_status.replace('_', ' ')}"
     repo.update_job_status(
         job_id=job_id,
-        user_id=resolved_user_id,
+        user_id=user_id,
         new_status=new_status,
         note=transition_note,
     )
@@ -221,14 +202,14 @@ def move_job_to_status(
     if not updated:
         raise RuntimeError(f"Failed to reload job {job_id} after status update.")
 
-    return {"user_id": resolved_user_id, "job": _job_to_item(updated)}
+    return {"user_id": user_id, "job": _job_to_item(updated)}
 
 
 def approve_and_schedule_job(
     job_id: int,
     scheduled_date: str,
+    user_id: int,
     assigned_crew: Optional[List[str]] = None,
-    user_id: Optional[int] = None,
     note: Optional[str] = None,
 ) -> Dict[str, Any]:
     normalized_date = _parse_date(scheduled_date, "scheduled_date")
@@ -245,22 +226,21 @@ def approve_and_schedule_job(
     db = DBConnector()
     repo = JobRepository(db)
 
-    resolved_user_id = _resolve_user_id(repo, user_id)
     current = repo.get_job(job_id)
     if not current:
         raise ValueError(f"Job {job_id} not found.")
-    if current.user_id != resolved_user_id:
-        raise ValueError(f"Job {job_id} does not belong to user {resolved_user_id}.")
+    if current.user_id != user_id:
+        raise ValueError(f"Job {job_id} does not belong to user {user_id}.")
     if current.status != "awaiting_approval":
         raise ValueError(
             f"Job {job_id} must be in awaiting_approval status to be approved."
         )
 
     repo.update_job_dates(job_id=job_id, scheduled_date=normalized_date)
-    repo.assign_crew(job_id=job_id, user_id=resolved_user_id, crew_members=normalized_crew)
+    repo.assign_crew(job_id=job_id, user_id=user_id, crew_members=normalized_crew)
     repo.update_job_status(
         job_id=job_id,
-        user_id=resolved_user_id,
+        user_id=user_id,
         new_status="scheduled",
         note=normalized_note,
     )
@@ -269,4 +249,4 @@ def approve_and_schedule_job(
     if not updated:
         raise RuntimeError(f"Failed to reload job {job_id} after approval.")
 
-    return {"user_id": resolved_user_id, "job": _job_to_item(updated)}
+    return {"user_id": user_id, "job": _job_to_item(updated)}

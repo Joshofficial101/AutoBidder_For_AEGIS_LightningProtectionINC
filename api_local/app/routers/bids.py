@@ -3,14 +3,22 @@ import binascii
 import tempfile
 from pathlib import Path
 
-from fastapi import APIRouter
-from fastapi.responses import Response
+from fastapi import APIRouter, Depends
+from fastapi.responses import FileResponse, Response
+from starlette.background import BackgroundTask
 
+from app.auth_dependencies import get_current_user
 from app.errors import ApiException, COMMON_ERROR_RESPONSES
+from app.file_limits import PayloadTooLargeError, assert_excel_base64_within_limit
 from app.schemas import BidPreviewBase64Request, BidPreviewRequest, BidPreviewResponse
 from app.services.bidding_service import export_bid_excel, export_bid_pdf, preview_bid
+from app.temp_files import safe_unlink
 
-router = APIRouter(prefix="/api/v1/bids", tags=["bids"])
+router = APIRouter(
+    prefix="/api/v1/bids",
+    tags=["bids"],
+    dependencies=[Depends(get_current_user)],
+)
 
 
 def _safe_name(value: str) -> str:
@@ -25,11 +33,11 @@ def _safe_name(value: str) -> str:
 
 
 def _download_response(file_path: Path, filename: str, media_type: str) -> Response:
-    content = file_path.read_bytes()
-    return Response(
-        content=content,
+    return FileResponse(
+        path=file_path,
         media_type=media_type,
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        filename=filename,
+        background=BackgroundTask(lambda: safe_unlink(file_path)),
     )
 
 
@@ -60,6 +68,13 @@ def preview(payload: BidPreviewRequest) -> BidPreviewResponse:
         preview_payload = _build_payload_from_preview_request(payload)
         result = preview_bid(preview_payload)
         return BidPreviewResponse(**result)
+    except PayloadTooLargeError as exc:
+        raise ApiException(
+            status_code=413,
+            code="PAYLOAD_TOO_LARGE",
+            message=str(exc),
+            detail=str(exc),
+        )
     except ValueError as exc:
         raise ApiException(
             status_code=400,
@@ -84,6 +99,7 @@ def preview_base64(payload: BidPreviewBase64Request) -> BidPreviewResponse:
     temp_path: Path | None = None
 
     try:
+        assert_excel_base64_within_limit(payload.pricing_file_base64)
         pricing_bytes = base64.b64decode(payload.pricing_file_base64, validate=True)
         suffix = Path(payload.file_name or "").suffix.lower() or ".xlsx"
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
@@ -101,6 +117,13 @@ def preview_base64(payload: BidPreviewBase64Request) -> BidPreviewResponse:
             message="Invalid base64 pricing payload.",
             detail="pricing_file_base64 must be valid Base64 data.",
         )
+    except PayloadTooLargeError as exc:
+        raise ApiException(
+            status_code=413,
+            code="PAYLOAD_TOO_LARGE",
+            message=str(exc),
+            detail=str(exc),
+        )
     except ValueError as exc:
         raise ApiException(
             status_code=400,
@@ -115,13 +138,11 @@ def preview_base64(payload: BidPreviewBase64Request) -> BidPreviewResponse:
             message="Bid preview failed.",
         )
     finally:
-        if temp_path and temp_path.exists():
-            temp_path.unlink(missing_ok=True)
+        safe_unlink(temp_path)
 
 
 @router.post("/export/excel", responses=COMMON_ERROR_RESPONSES)
 def export_excel(payload: BidPreviewRequest) -> Response:
-    output_path: Path | None = None
     try:
         request_payload = _build_payload_from_preview_request(payload)
         project_name = str(request_payload.get("project_data", {}).get("project_name") or "lightningbid_bid")
@@ -136,6 +157,13 @@ def export_excel(payload: BidPreviewRequest) -> Response:
             f"{safe_name}_bid.xlsx",
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
+    except PayloadTooLargeError as exc:
+        raise ApiException(
+            status_code=413,
+            code="PAYLOAD_TOO_LARGE",
+            message=str(exc),
+            detail=str(exc),
+        )
     except ValueError as exc:
         raise ApiException(
             status_code=400,
@@ -149,9 +177,6 @@ def export_excel(payload: BidPreviewRequest) -> Response:
             code="BID_EXPORT_FAILED",
             message="Excel export failed.",
         )
-    finally:
-        if output_path and output_path.exists():
-            output_path.unlink(missing_ok=True)
 
 
 @router.post("/export/excel/base64", responses=COMMON_ERROR_RESPONSES)
@@ -159,6 +184,7 @@ def export_excel_base64(payload: BidPreviewBase64Request) -> Response:
     pricing_path: Path | None = None
     output_path: Path | None = None
     try:
+        assert_excel_base64_within_limit(payload.pricing_file_base64)
         pricing_bytes = base64.b64decode(payload.pricing_file_base64, validate=True)
         suffix = Path(payload.file_name or "").suffix.lower() or ".xlsx"
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
@@ -184,6 +210,13 @@ def export_excel_base64(payload: BidPreviewBase64Request) -> Response:
             message="Invalid base64 pricing payload.",
             detail="pricing_file_base64 must be valid Base64 data.",
         )
+    except PayloadTooLargeError as exc:
+        raise ApiException(
+            status_code=413,
+            code="PAYLOAD_TOO_LARGE",
+            message=str(exc),
+            detail=str(exc),
+        )
     except ValueError as exc:
         raise ApiException(
             status_code=400,
@@ -198,15 +231,12 @@ def export_excel_base64(payload: BidPreviewBase64Request) -> Response:
             message="Excel export failed.",
         )
     finally:
-        if pricing_path and pricing_path.exists():
-            pricing_path.unlink(missing_ok=True)
-        if output_path and output_path.exists():
-            output_path.unlink(missing_ok=True)
+        safe_unlink(pricing_path)
+        # output_path cleanup is handled by FileResponse background task.
 
 
 @router.post("/export/pdf", responses=COMMON_ERROR_RESPONSES)
 def export_pdf(payload: BidPreviewRequest) -> Response:
-    output_path: Path | None = None
     try:
         request_payload = _build_payload_from_preview_request(payload)
         project_name = str(request_payload.get("project_data", {}).get("project_name") or "lightningbid_bid")
@@ -221,6 +251,13 @@ def export_pdf(payload: BidPreviewRequest) -> Response:
             f"{safe_name}_submittal.pdf",
             "application/pdf",
         )
+    except PayloadTooLargeError as exc:
+        raise ApiException(
+            status_code=413,
+            code="PAYLOAD_TOO_LARGE",
+            message=str(exc),
+            detail=str(exc),
+        )
     except ValueError as exc:
         raise ApiException(
             status_code=400,
@@ -234,9 +271,6 @@ def export_pdf(payload: BidPreviewRequest) -> Response:
             code="BID_EXPORT_FAILED",
             message="PDF export failed.",
         )
-    finally:
-        if output_path and output_path.exists():
-            output_path.unlink(missing_ok=True)
 
 
 @router.post("/export/pdf/base64", responses=COMMON_ERROR_RESPONSES)
@@ -244,6 +278,7 @@ def export_pdf_base64(payload: BidPreviewBase64Request) -> Response:
     pricing_path: Path | None = None
     output_path: Path | None = None
     try:
+        assert_excel_base64_within_limit(payload.pricing_file_base64)
         pricing_bytes = base64.b64decode(payload.pricing_file_base64, validate=True)
         suffix = Path(payload.file_name or "").suffix.lower() or ".xlsx"
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
@@ -269,6 +304,13 @@ def export_pdf_base64(payload: BidPreviewBase64Request) -> Response:
             message="Invalid base64 pricing payload.",
             detail="pricing_file_base64 must be valid Base64 data.",
         )
+    except PayloadTooLargeError as exc:
+        raise ApiException(
+            status_code=413,
+            code="PAYLOAD_TOO_LARGE",
+            message=str(exc),
+            detail=str(exc),
+        )
     except ValueError as exc:
         raise ApiException(
             status_code=400,
@@ -283,7 +325,5 @@ def export_pdf_base64(payload: BidPreviewBase64Request) -> Response:
             message="PDF export failed.",
         )
     finally:
-        if pricing_path and pricing_path.exists():
-            pricing_path.unlink(missing_ok=True)
-        if output_path and output_path.exists():
-            output_path.unlink(missing_ok=True)
+        safe_unlink(pricing_path)
+        # output_path cleanup is handled by FileResponse background task.

@@ -10,12 +10,16 @@ import {
   getHealthReadiness,
   getJobsBoard,
   login,
+  logoutSession,
   parsePdf,
   parsePdfUpload,
   previewBid,
   previewBidUpload,
   register,
   resetPasswordWithBackupCode,
+  setAuthFailureHandler,
+  setAuthToken,
+  verifyPassword,
   updateJobStatus,
 } from "./api/client";
 import {
@@ -306,7 +310,10 @@ function parseAuthSession(raw: string | null): AuthSessionState | null {
     if (
       parsedSessionUser &&
       typeof parsedSessionUser.user_id === "number" &&
-      typeof parsedSessionUser.username === "string"
+      typeof parsedSessionUser.username === "string" &&
+      typeof parsedSessionUser.access_token === "string" &&
+      typeof parsedSessionUser.token_type === "string" &&
+      typeof parsedSessionUser.expires_at === "string"
     ) {
       const session = parsed as AuthSessionState;
       const created = parseTimestamp(session.created_at);
@@ -315,13 +322,6 @@ function parseAuthSession(raw: string | null): AuthSessionState | null {
       if (created !== null && lastActive !== null && expires !== null) {
         return session;
       }
-    }
-
-    if (typeof parsedObj.user_id === "number" && typeof parsedObj.username === "string") {
-      return buildAuthSession({
-        user_id: parsedObj.user_id,
-        username: parsedObj.username,
-      });
     }
   } catch {
     return null;
@@ -1281,6 +1281,13 @@ function AuthView({
     mode === "reset"
       ? "Use your backup recovery code to set a new password."
       : null;
+  const sanitizeAuthUser = (user: AuthUser): AuthUser => ({
+    user_id: user.user_id,
+    username: user.username,
+    access_token: user.access_token,
+    token_type: user.token_type,
+    expires_at: user.expires_at,
+  });
 
   const clearAuthFeedback = () => {
     setError(null);
@@ -1299,10 +1306,7 @@ function AuthView({
 
   const handleContinueAfterBackupSaved = () => {
     if (pendingAuthUser) {
-      onAuthenticated({
-        user_id: pendingAuthUser.user_id,
-        username: pendingAuthUser.username,
-      });
+      onAuthenticated(sanitizeAuthUser(pendingAuthUser));
     }
     setRecoveryPacket(null);
     setPendingAuthUser(null);
@@ -1321,10 +1325,7 @@ function AuthView({
       if (mode === "signin") {
         const user = await login({ username: trimmedUsername, password });
         setPassword("");
-        onAuthenticated({
-          user_id: user.user_id,
-          username: user.username,
-        });
+        onAuthenticated(sanitizeAuthUser(user));
         return;
       }
 
@@ -1333,10 +1334,7 @@ function AuthView({
         setPassword("");
 
         if (user.backup_code) {
-          setPendingAuthUser({
-            user_id: user.user_id,
-            username: user.username,
-          });
+          setPendingAuthUser(sanitizeAuthUser(user));
           setRecoveryPacket({
             username: user.username,
             backupCode: user.backup_code,
@@ -1346,10 +1344,7 @@ function AuthView({
           return;
         }
 
-        onAuthenticated({
-          user_id: user.user_id,
-          username: user.username,
-        });
+        onAuthenticated(sanitizeAuthUser(user));
         return;
       }
 
@@ -1643,7 +1638,7 @@ function DashboardView({ onNavigate, userId }: { onNavigate: (view: NavKey) => v
     try {
       setLoading(true);
       setError(null);
-      const payload = await getDashboardSummary(userId);
+      const payload = await getDashboardSummary();
       setSummary(payload);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load dashboard");
@@ -3019,7 +3014,7 @@ function JobsView({ userId, username }: { userId: number; username: string }) {
         setLoading(true);
       }
       setError(null);
-      const payload = await getJobsBoard(userId);
+      const payload = await getJobsBoard();
       setBoard(payload);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load jobs board");
@@ -3041,7 +3036,6 @@ function JobsView({ userId, username }: { userId: number; username: string }) {
     const note = input.note.trim();
     const crews = parseCrewCsv(input.assigned_crew);
     const payload: {
-      user_id: number;
       new_status: JobBoardStatus;
       note?: string;
       start_date?: string;
@@ -3050,7 +3044,6 @@ function JobsView({ userId, username }: { userId: number; username: string }) {
       invoice_number?: string;
       assigned_crew?: string[];
     } = {
-      user_id: userId,
       new_status: nextStatus,
     };
 
@@ -3152,11 +3145,10 @@ function JobsView({ userId, username }: { userId: number; username: string }) {
     try {
       setAlertsBusy(true);
       setAlertsError(null);
-      const authResult = await login({
-        username,
+      const verifyResult = await verifyPassword({
         password: alertsPassword,
       });
-      if (authResult.user_id !== userId) {
+      if (!verifyResult.valid) {
         setAlertsError("Password confirmation failed for this account.");
         return;
       }
@@ -3220,7 +3212,6 @@ function JobsView({ userId, username }: { userId: number; username: string }) {
       setUpdatingJobId(job.job_id);
       setError(null);
       await approveJob(job.job_id, {
-        user_id: userId,
         scheduled_date: scheduledDate,
         assigned_crew: crews,
         note,
@@ -3542,7 +3533,6 @@ function CalendarView({ userId }: { userId: number }) {
       const payload = await getCalendarJobs({
         start_date: range.start,
         end_date: range.end,
-        user_id: userId,
         status: statusFilter || undefined,
         crew: crewFilter || undefined,
       });
@@ -3913,11 +3903,25 @@ function App() {
       return;
     }
     writeAuthSessionToStorage(withSessionActivity(session));
+    setAuthToken(session.user.access_token);
     setAuthUser(session.user);
+  }, []);
+
+  useEffect(() => {
+    setAuthFailureHandler((message: string) => {
+      setAuthToken(null);
+      setAuthUser(null);
+      clearAuthSessionFromStorage();
+      setAuthNotice(message || "Session expired. Please sign in again.");
+    });
+    return () => {
+      setAuthFailureHandler(null);
+    };
   }, []);
 
   const handleAuthenticated = (user: AuthUser) => {
     setAuthUser(user);
+    setAuthToken(user.access_token);
     setAuthNotice(null);
     writeAuthSessionToStorage(buildAuthSession(user));
     lastActivityPersistAtRef.current = Date.now();
@@ -3925,6 +3929,10 @@ function App() {
   };
 
   const handleLogout = (notice?: string) => {
+    if (authUser?.access_token) {
+      void logoutSession().catch(() => undefined);
+    }
+    setAuthToken(null);
     setAuthUser(null);
     clearAuthSessionFromStorage();
     setAuthNotice(notice ?? null);

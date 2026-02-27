@@ -1,4 +1,5 @@
 import re
+import hashlib
 import secrets
 import string
 from datetime import datetime, timedelta, timezone
@@ -15,6 +16,8 @@ SYMBOL_PATTERN = re.compile(r"[^A-Za-z0-9]")
 
 MAX_FAILED_ATTEMPTS = 10
 LOCKOUT_MINUTES = 15
+SESSION_DURATION_HOURS = 8
+SESSION_TOUCH_INTERVAL_SECONDS = 60
 
 COMMON_WEAK_PASSWORDS = {
     "password",
@@ -35,10 +38,20 @@ class AuthLockoutError(ValueError):
         self.retry_after_seconds = retry_after_seconds
 
 
+class AuthTokenError(ValueError):
+    def __init__(self, message: str, code: str = "AUTH_INVALID_TOKEN") -> None:
+        super().__init__(message)
+        self.code = code
+
+
 def _generate_backup_code() -> str:
     alphabet = string.ascii_uppercase + string.digits
     chunks = ["".join(secrets.choice(alphabet) for _ in range(4)) for _ in range(4)]
     return "-".join(chunks)
+
+
+def _hash_access_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 def _normalize_backup_code(value: str) -> str:
@@ -75,6 +88,32 @@ def _parse_utc(raw: str | None) -> datetime | None:
         return datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone(timezone.utc)
     except ValueError:
         return None
+
+
+def _create_session_payload(db: DBConnector, user_id: int, username: str) -> Dict[str, Any]:
+    now = _utc_now()
+    expires_at = now + timedelta(hours=SESSION_DURATION_HOURS)
+    access_token = secrets.token_urlsafe(48)
+    token_hash = _hash_access_token(access_token)
+    now_str = _format_utc(now)
+    expires_at_str = _format_utc(expires_at)
+
+    db.purge_stale_auth_sessions(now_str)
+    db.create_auth_session(
+        user_id=int(user_id),
+        token_hash=token_hash,
+        created_at=now_str,
+        last_used_at=now_str,
+        expires_at=expires_at_str,
+    )
+
+    return {
+        "user_id": int(user_id),
+        "username": username,
+        "access_token": access_token,
+        "token_type": "bearer",
+        "expires_at": expires_at_str,
+    }
 
 
 def _validate_password(password: str, username: str | None = None, email: str | None = None) -> str:
@@ -165,11 +204,7 @@ def login_user(username: str, password: str) -> Dict[str, Any]:
 
     user_id, stored_username, _stored_password_hash = row
     db.clear_auth_security(normalized_username)
-
-    return {
-        "user_id": int(user_id),
-        "username": stored_username,
-    }
+    return _create_session_payload(db, int(user_id), stored_username)
 
 
 def register_user(username: str, email: str, password: str) -> Dict[str, Any]:
@@ -195,11 +230,9 @@ def register_user(username: str, email: str, password: str) -> Dict[str, Any]:
     if not user_id:
         raise ValueError("Username or email already exists.")
 
-    return {
-        "user_id": int(user_id),
-        "username": normalized_username,
-        "backup_code": backup_code,
-    }
+    response = _create_session_payload(db, int(user_id), normalized_username)
+    response["backup_code"] = backup_code
+    return response
 
 
 def reset_password_with_backup_code(username: str, backup_code: str, new_password: str) -> Dict[str, Any]:
@@ -231,8 +264,62 @@ def reset_password_with_backup_code(username: str, backup_code: str, new_passwor
     )
     db.clear_auth_security(normalized_username)
 
-    return {
-        "user_id": int(user_id),
-        "username": stored_username,
-        "backup_code": new_backup_code,
-    }
+    response = _create_session_payload(db, int(user_id), stored_username)
+    response["backup_code"] = new_backup_code
+    return response
+
+
+def get_authenticated_user(access_token: str) -> Dict[str, Any]:
+    token = (access_token or "").strip()
+    if not token:
+        raise AuthTokenError("Authentication required.", code="AUTH_MISSING_TOKEN")
+
+    now = _utc_now()
+    db = DBConnector()
+    session = db.get_auth_session_by_token_hash(_hash_access_token(token))
+    if not session:
+        raise AuthTokenError("Invalid authentication token.")
+
+    session_id, user_id, username, last_used_at_raw, expires_at_raw, revoked_at_raw = session
+    if revoked_at_raw:
+        raise AuthTokenError("Authentication token has been revoked.")
+
+    expires_at = _parse_utc(expires_at_raw)
+    if not expires_at or expires_at <= now:
+        db.revoke_auth_session(int(session_id), _format_utc(now))
+        raise AuthTokenError("Session expired. Please sign in again.", code="AUTH_SESSION_EXPIRED")
+
+    last_used_at = _parse_utc(last_used_at_raw)
+    if (
+        not last_used_at
+        or int((now - last_used_at).total_seconds()) >= SESSION_TOUCH_INTERVAL_SECONDS
+    ):
+        db.touch_auth_session(int(session_id), _format_utc(now))
+    return {"user_id": int(user_id), "username": str(username)}
+
+
+def logout_access_token(access_token: str) -> None:
+    token = (access_token or "").strip()
+    if not token:
+        return
+
+    db = DBConnector()
+    session = db.get_auth_session_by_token_hash(_hash_access_token(token))
+    if not session:
+        return
+
+    session_id = int(session[0])
+    db.revoke_auth_session(session_id, _format_utc(_utc_now()))
+
+
+def verify_user_password(user_id: int, password: str) -> bool:
+    if not password:
+        return False
+
+    db = DBConnector()
+    row = db.get_user_auth_by_id(int(user_id))
+    if not row:
+        return False
+
+    _resolved_user_id, _username, password_hash = row
+    return verify_password(password, password_hash)

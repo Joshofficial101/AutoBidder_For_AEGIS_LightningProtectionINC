@@ -15,23 +15,6 @@ VALID_STATUSES = {
 }
 
 
-def _resolve_user_id(repo: JobRepository, provided_user_id: Optional[int]) -> int:
-    if provided_user_id:
-        return provided_user_id
-
-    row = repo.db.fetchone(
-        "SELECT user_id FROM Jobs ORDER BY updated_at DESC, created_at DESC LIMIT 1;"
-    )
-    if row and row[0]:
-        return int(row[0])
-
-    row = repo.db.fetchone("SELECT user_id FROM Users ORDER BY user_id DESC LIMIT 1;")
-    if row and row[0]:
-        return int(row[0])
-
-    raise ValueError("No users found in local database.")
-
-
 def _parse_query_date(value: str, field_name: str) -> date:
     try:
         return datetime.strptime(value.strip(), "%Y-%m-%d").date()
@@ -134,7 +117,7 @@ def _crew_matches(job: Job, crew: Optional[str]) -> bool:
 def get_calendar_jobs(
     start_date: str,
     end_date: str,
-    user_id: Optional[int] = None,
+    user_id: int,
     status: Optional[str] = None,
     crew: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -151,8 +134,7 @@ def get_calendar_jobs(
 
     db = DBConnector()
     repo = JobRepository(db)
-    resolved_user_id = _resolve_user_id(repo, user_id)
-    all_jobs = repo.get_all_jobs(resolved_user_id)
+    all_jobs = repo.get_all_jobs(user_id)
 
     matched: List[Tuple[date, Job]] = []
     for job in all_jobs:
@@ -177,7 +159,7 @@ def get_calendar_jobs(
     filtered_jobs = [item[1] for item in matched]
 
     return {
-        "user_id": resolved_user_id,
+        "user_id": user_id,
         "start_date": start.strftime("%Y-%m-%d"),
         "end_date": end.strftime("%Y-%m-%d"),
         "jobs": [_job_to_item(job) for job in filtered_jobs],
@@ -187,7 +169,7 @@ def get_calendar_jobs(
 
 def get_calendar_day(
     target_date: str,
-    user_id: Optional[int] = None,
+    user_id: int,
     status: Optional[str] = None,
     crew: Optional[str] = None,
 ) -> Dict[str, Any]:

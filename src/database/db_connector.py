@@ -37,6 +37,17 @@ class DBConnector:
         last_failed_at TEXT,
         updated_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS AuthSessions (
+        session_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        token_hash TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL,
+        last_used_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        revoked_at TEXT,
+        FOREIGN KEY (user_id) REFERENCES Users (user_id) ON DELETE CASCADE
+    );
     
     CREATE TABLE IF NOT EXISTS SourceDocuments (
         document_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -437,6 +448,11 @@ class DBConnector:
         sql = "SELECT user_id, username, password_hash FROM Users WHERE username = ?;"
         return self.fetchone(sql, (username,))
 
+    def get_user_auth_by_id(self, user_id: int) -> Optional[tuple]:
+        """Retrieves user auth fields by user_id."""
+        sql = "SELECT user_id, username, password_hash FROM Users WHERE user_id = ?;"
+        return self.fetchone(sql, (user_id,))
+
     def get_user_recovery_by_username(self, username: str) -> Optional[tuple]:
         """Retrieves user recovery details by username."""
         sql = """
@@ -497,6 +513,75 @@ class DBConnector:
         """Clears auth security state for a username after successful login."""
         sql = "DELETE FROM AuthSecurity WHERE username = ?;"
         self.execute(sql, (username,))
+
+    def purge_stale_auth_sessions(self, active_time_iso: str) -> None:
+        """
+        Removes expired and revoked sessions to keep local auth storage bounded.
+
+        Args:
+            active_time_iso: Current UTC timestamp string in ISO-like format.
+        """
+        sql = """
+        DELETE FROM AuthSessions
+        WHERE expires_at <= ?
+           OR (revoked_at IS NOT NULL AND revoked_at <= ?);
+        """
+        self.execute(sql, (active_time_iso, active_time_iso))
+
+    def create_auth_session(
+        self,
+        user_id: int,
+        token_hash: str,
+        created_at: str,
+        last_used_at: str,
+        expires_at: str,
+    ) -> int:
+        """Creates a new auth session and returns session_id."""
+        sql = """
+        INSERT INTO AuthSessions (
+            user_id,
+            token_hash,
+            created_at,
+            last_used_at,
+            expires_at
+        ) VALUES (?, ?, ?, ?, ?);
+        """
+        self.execute(sql, (user_id, token_hash, created_at, last_used_at, expires_at))
+        return int(self._cursor.lastrowid)
+
+    def get_auth_session_by_token_hash(self, token_hash: str) -> Optional[tuple]:
+        """Finds a session by token hash and includes username for fast auth checks."""
+        sql = """
+        SELECT
+            s.session_id,
+            s.user_id,
+            u.username,
+            s.last_used_at,
+            s.expires_at,
+            s.revoked_at
+        FROM AuthSessions s
+        JOIN Users u ON u.user_id = s.user_id
+        WHERE s.token_hash = ?;
+        """
+        return self.fetchone(sql, (token_hash,))
+
+    def touch_auth_session(self, session_id: int, last_used_at: str) -> None:
+        """Updates last-used timestamp for an active session."""
+        sql = """
+        UPDATE AuthSessions
+        SET last_used_at = ?
+        WHERE session_id = ? AND revoked_at IS NULL;
+        """
+        self.execute(sql, (last_used_at, session_id))
+
+    def revoke_auth_session(self, session_id: int, revoked_at: str) -> None:
+        """Marks a session revoked (idempotent)."""
+        sql = """
+        UPDATE AuthSessions
+        SET revoked_at = ?
+        WHERE session_id = ? AND revoked_at IS NULL;
+        """
+        self.execute(sql, (revoked_at, session_id))
 
 # Optional: Simple test execution for sanity check
 if __name__ == '__main__':

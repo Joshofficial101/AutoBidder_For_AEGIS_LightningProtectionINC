@@ -1,12 +1,23 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
+from app.auth_dependencies import AuthenticatedUser, get_bearer_token, get_current_user
 from app.errors import ApiException, COMMON_ERROR_RESPONSES
-from app.schemas import AuthUserResponse, LoginRequest, RegisterRequest, ResetPasswordBackupRequest
+from app.schemas import (
+    AuthLogoutResponse,
+    AuthUserResponse,
+    LoginRequest,
+    RegisterRequest,
+    ResetPasswordBackupRequest,
+    VerifyPasswordRequest,
+    VerifyPasswordResponse,
+)
 from app.services.auth_service import (
     AuthLockoutError,
     login_user,
+    logout_access_token,
     register_user,
     reset_password_with_backup_code,
+    verify_user_password,
 )
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
@@ -85,4 +96,37 @@ def reset_password_backup(payload: ResetPasswordBackupRequest) -> AuthUserRespon
             status_code=500,
             code="AUTH_RESET_FAILED",
             message="Backup password reset failed.",
+        )
+
+
+@router.post("/logout", response_model=AuthLogoutResponse, responses=COMMON_ERROR_RESPONSES)
+def logout(access_token: str = Depends(get_bearer_token)) -> AuthLogoutResponse:
+    try:
+        logout_access_token(access_token)
+        return AuthLogoutResponse()
+    except Exception:
+        raise ApiException(
+            status_code=500,
+            code="AUTH_LOGOUT_FAILED",
+            message="Logout failed.",
+        )
+
+
+@router.post(
+    "/verify-password",
+    response_model=VerifyPasswordResponse,
+    responses=COMMON_ERROR_RESPONSES,
+)
+def verify_password(
+    payload: VerifyPasswordRequest,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+) -> VerifyPasswordResponse:
+    try:
+        is_valid = verify_user_password(current_user.user_id, payload.password)
+        return VerifyPasswordResponse(valid=is_valid)
+    except Exception:
+        raise ApiException(
+            status_code=500,
+            code="AUTH_VERIFY_PASSWORD_FAILED",
+            message="Password verification failed.",
         )

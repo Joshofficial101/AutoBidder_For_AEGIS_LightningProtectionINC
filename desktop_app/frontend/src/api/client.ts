@@ -1,4 +1,5 @@
 import {
+  AuthLogoutResponse,
   AuthUser,
   BidPreviewBase64Request,
   BidPreviewRequest,
@@ -20,12 +21,28 @@ import {
   ParsePdfResponse,
   ResetPasswordBackupRequest,
   RegisterRequest,
+  VerifyPasswordRequest,
+  VerifyPasswordResponse,
 } from "./types";
 
 const API_BASE = "http://127.0.0.1:8765";
+let authToken: string | null = null;
+let authFailureHandler: ((message: string) => void) | null = null;
+
+export function setAuthToken(token: string | null): void {
+  const normalized = (token ?? "").trim();
+  authToken = normalized ? normalized : null;
+}
+
+export function setAuthFailureHandler(handler: ((message: string) => void) | null): void {
+  authFailureHandler = handler;
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers ?? {});
+  if (authToken && !headers.has("Authorization")) {
+    headers.set("Authorization", `Bearer ${authToken}`);
+  }
   if (!(init?.body instanceof FormData) && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
@@ -50,6 +67,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
         // Keep raw body when it's not JSON.
       }
     }
+    if (res.status === 401) {
+      authToken = null;
+      const authMessage = message || "Session expired. Please sign in again.";
+      authFailureHandler?.(authMessage);
+    }
     throw new Error(message);
   }
 
@@ -58,6 +80,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 async function requestBlob(path: string, init?: RequestInit): Promise<Blob> {
   const headers = new Headers(init?.headers ?? {});
+  if (authToken && !headers.has("Authorization")) {
+    headers.set("Authorization", `Bearer ${authToken}`);
+  }
   if (!(init?.body instanceof FormData) && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
@@ -81,6 +106,11 @@ async function requestBlob(path: string, init?: RequestInit): Promise<Blob> {
       } catch {
         // Keep raw body when it's not JSON.
       }
+    }
+    if (res.status === 401) {
+      authToken = null;
+      const authMessage = message || "Session expired. Please sign in again.";
+      authFailureHandler?.(authMessage);
     }
     throw new Error(message);
   }
@@ -147,6 +177,19 @@ export function register(payload: RegisterRequest): Promise<AuthUser> {
 
 export function resetPasswordWithBackupCode(payload: ResetPasswordBackupRequest): Promise<AuthUser> {
   return request<AuthUser>("/api/v1/auth/reset-password/backup", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function logoutSession(): Promise<AuthLogoutResponse> {
+  return request<AuthLogoutResponse>("/api/v1/auth/logout", {
+    method: "POST",
+  });
+}
+
+export function verifyPassword(payload: VerifyPasswordRequest): Promise<VerifyPasswordResponse> {
+  return request<VerifyPasswordResponse>("/api/v1/auth/verify-password", {
     method: "POST",
     body: JSON.stringify(payload),
   });
@@ -237,9 +280,8 @@ export async function parsePdfUpload(file: File): Promise<ParsePdfResponse> {
   );
 }
 
-export function getDashboardSummary(userId?: number): Promise<DashboardSummaryResponse> {
-  const qs = typeof userId === "number" ? `?user_id=${userId}` : "";
-  return request<DashboardSummaryResponse>(`/api/v1/dashboard/summary${qs}`);
+export function getDashboardSummary(): Promise<DashboardSummaryResponse> {
+  return request<DashboardSummaryResponse>("/api/v1/dashboard/summary");
 }
 
 export function previewBidUpload(
@@ -387,9 +429,8 @@ export function exportBidPdfUpload(file: File, payload: BidPreviewUploadRequest)
   return exportBidPdfBase64(file, payload);
 }
 
-export function getJobsBoard(userId?: number): Promise<JobsBoardResponse> {
-  const qs = typeof userId === "number" ? `?user_id=${userId}` : "";
-  return request<JobsBoardResponse>(`/api/v1/jobs/board${qs}`);
+export function getJobsBoard(): Promise<JobsBoardResponse> {
+  return request<JobsBoardResponse>("/api/v1/jobs/board");
 }
 
 export function updateJobStatus(
@@ -412,16 +453,12 @@ export function approveJob(jobId: number, payload: JobApproveRequest): Promise<J
 export function getCalendarJobs(params: {
   start_date: string;
   end_date: string;
-  user_id?: number;
   status?: string;
   crew?: string;
 }): Promise<CalendarJobsResponse> {
   const search = new URLSearchParams();
   search.set("start_date", params.start_date);
   search.set("end_date", params.end_date);
-  if (typeof params.user_id === "number") {
-    search.set("user_id", String(params.user_id));
-  }
   if (params.status) {
     search.set("status", params.status);
   }
@@ -433,15 +470,11 @@ export function getCalendarJobs(params: {
 
 export function getCalendarDay(params: {
   date: string;
-  user_id?: number;
   status?: string;
   crew?: string;
 }): Promise<CalendarDayResponse> {
   const search = new URLSearchParams();
   search.set("date", params.date);
-  if (typeof params.user_id === "number") {
-    search.set("user_id", String(params.user_id));
-  }
   if (params.status) {
     search.set("status", params.status);
   }

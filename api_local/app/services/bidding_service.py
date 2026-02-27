@@ -12,6 +12,7 @@ from src.adapters.excel_loader import load_pricing_from_excel
 from src.calculator.bid_calc import BidCalculator
 from src.exporters.excel_export import ExcelBidExporter
 from src.exporters.pdf_export import PDFSubmittalExporter
+from app.file_limits import assert_excel_file_within_limit
 
 
 def _apply_worker_labor_costs(bid, workers: List[Dict[str, Any]]) -> None:
@@ -139,6 +140,7 @@ def _build_bid_from_payload(payload: Dict[str, Any]):
     path_obj = Path(pricing_file_path)
     if not path_obj.exists():
         raise ValueError("pricing_file_path does not exist")
+    assert_excel_file_within_limit(path_obj)
 
     if not project_data.get("project_name"):
         project_data["project_name"] = "Lightning Protection Project"
