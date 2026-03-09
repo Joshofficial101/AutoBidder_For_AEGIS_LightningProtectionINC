@@ -18,6 +18,14 @@ const HEALTH_POLL_MS: u64 = 250;
 
 struct SidecarState(Mutex<Option<CommandChild>>);
 
+#[tauri::command]
+fn pick_excel_file() -> Option<String> {
+    rfd::FileDialog::new()
+        .add_filter("Excel/CSV", &["xlsx", "xls", "xlsm", "csv"])
+        .pick_file()
+        .map(|path| path.to_string_lossy().to_string())
+}
+
 #[cfg(not(debug_assertions))]
 fn start_bundled_sidecar(app: &tauri::AppHandle) -> Result<CommandChild, String> {
     let command = app
@@ -158,6 +166,7 @@ fn stop_sidecar(app: &tauri::AppHandle) {
 fn main() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .invoke_handler(tauri::generate_handler![pick_excel_file])
         .manage(SidecarState(Mutex::new(None)))
         .setup(|app| {
             let child = start_sidecar(&app.handle())?;

@@ -10,6 +10,9 @@ if str(ROOT) not in sys.path:
 
 from src.adapters.excel_loader import load_pricing_from_excel
 from src.calculator.bid_calc import BidCalculator
+from src.database.bid_repository import BidRepository
+from src.database.db_connector import DBConnector
+from src.database.job_repository import JobRepository
 from src.exporters.excel_export import ExcelBidExporter
 from src.exporters.pdf_export import PDFSubmittalExporter
 from app.file_limits import assert_excel_file_within_limit
@@ -161,11 +164,11 @@ def _build_bid_from_payload(payload: Dict[str, Any]):
     calculator = BidCalculator(price_catalog, compliance_code=compliance_code)
     bid = calculator.calculate_bid(project_data)
     _apply_worker_labor_costs(bid, workers)
-    return bid, workers, compliance_code
+    return bid, workers, compliance_code, project_data
 
 
 def preview_bid(payload: Dict[str, Any]) -> Dict[str, Any]:
-    bid, _workers, _compliance_code = _build_bid_from_payload(payload)
+    bid, _workers, _compliance_code, _project_data = _build_bid_from_payload(payload)
 
     custom_adjustment_entries = [
         {
@@ -219,12 +222,49 @@ def preview_bid(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def export_bid_excel(payload: Dict[str, Any], output_path: Path) -> Path:
-    bid, workers, _compliance_code = _build_bid_from_payload(payload)
+    bid, workers, _compliance_code, _project_data = _build_bid_from_payload(payload)
     exporter = ExcelBidExporter()
     return exporter.export_bid(bid, output_path, workers=workers)
 
 
 def export_bid_pdf(payload: Dict[str, Any], output_path: Path) -> Path:
-    bid, _workers, compliance_code = _build_bid_from_payload(payload)
+    bid, _workers, compliance_code, _project_data = _build_bid_from_payload(payload)
     exporter = PDFSubmittalExporter()
     return exporter.export_submittal(bid, output_path, compliance_code=compliance_code)
+
+
+def confirm_bid_to_job(payload: Dict[str, Any], user_id: int) -> Dict[str, Any]:
+    bid, workers, compliance_code, project_data = _build_bid_from_payload(payload)
+
+    db = DBConnector()
+    bid_repo = BidRepository(db)
+    job_repo = JobRepository(db)
+
+    project_id = bid_repo.get_or_create_project(
+        user_id=user_id,
+        project_name=str(project_data.get("project_name") or bid.project_name),
+        project_data=project_data,
+    )
+    bid_id = bid_repo.create_bid(
+        user_id=user_id,
+        project_id=project_id,
+        bid=bid,
+        workers=workers,
+        compliance_code=compliance_code,
+    )
+    job_id = job_repo.create_job_from_bid(
+        bid_id=bid_id,
+        user_id=user_id,
+        scheduled_date=None,
+        assigned_crew=[worker.get("name", "").strip() for worker in workers if str(worker.get("name") or "").strip()],
+    )
+
+    return {
+        "user_id": user_id,
+        "project_id": int(project_id),
+        "bid_id": int(bid_id),
+        "job_id": int(job_id),
+        "project_name": str(bid.project_name),
+        "final_bid_amount": round(float(bid.adjusted_final_bid_amount), 2),
+        "status": "awaiting_approval",
+    }

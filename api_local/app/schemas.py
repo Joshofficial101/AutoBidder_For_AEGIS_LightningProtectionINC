@@ -214,6 +214,16 @@ class BidPreviewResponse(ApiModel):
     sections: List[SectionSummary]
 
 
+class BidConfirmResponse(ApiModel):
+    user_id: int
+    project_id: int
+    bid_id: int
+    job_id: int
+    project_name: str
+    final_bid_amount: float
+    status: str
+
+
 class ParsePdfRequest(ApiModel):
     pdf_file_path: FilePath
 
@@ -289,6 +299,8 @@ class DashboardJobItem(ApiModel):
 class DashboardMetrics(ApiModel):
     active_jobs: int
     completed_jobs: int
+    awaiting_approval_jobs: int
+    completed_not_invoiced_jobs: int
     total_revenue: float
     total_profit: float
     profit_margin_pct: float
@@ -337,6 +349,105 @@ class JobApproveRequest(ApiModel):
 class JobApproveResponse(ApiModel):
     user_id: int
     job: DashboardJobItem
+
+
+class JobAssetWorker(ApiModel):
+    name: str
+    wage_per_hour: float
+    hours: float
+    total_cost: float
+
+
+class JobAssetSection(ApiModel):
+    name: str
+    items: int
+    material_total: float
+    labor_total: float
+    section_total: float
+
+
+class JobAssetCostSummary(ApiModel):
+    material_total: float
+    labor_total: float
+    subtotal: float
+    total_with_markup: float
+    final_bid_amount: float
+    labor_markup_pct: float
+    overhead_pct: float
+    profit_pct: float
+    shipping_amount: float
+    use_tax_pct: float
+    commission_amount: float
+    tools_rental_amount: float
+    tools_rental_type: str
+
+
+class JobAssetFinancialSummary(ApiModel):
+    payment_status: str
+    amount_paid: float
+    payment_date: Optional[str] = None
+    total_costs: Optional[float] = None
+    net_profit: Optional[float] = None
+    profit_margin_pct: Optional[float] = None
+
+
+class JobAssetDocument(ApiModel):
+    document_id: int
+    document_type: str
+    file_path: str
+    tag: Optional[str] = None
+    uploaded_at: Optional[str] = None
+
+
+class JobExportHistoryItem(ApiModel):
+    export_id: int
+    export_type: str
+    file_name: str
+    file_path: str
+    created_at: str
+    file_exists: bool = True
+
+
+class JobExportCleanupResponse(ApiModel):
+    user_id: int
+    job_id: int
+    older_than_days: int
+    deleted_records: int
+    deleted_files: int
+    skipped_files: int
+
+
+class JobAssetListItem(ApiModel):
+    job_id: int
+    project_name: str
+    status: str
+    status_display: str
+    bid_amount: float = 0.0
+    scheduled_date: Optional[str] = None
+    start_date: Optional[str] = None
+    completion_date: Optional[str] = None
+    invoice_number: Optional[str] = None
+    invoice_date: Optional[str] = None
+    assigned_crew: List[str] = Field(default_factory=list)
+    has_financials: bool = False
+
+
+class JobAssetsIndexResponse(ApiModel):
+    user_id: int
+    jobs: List[JobAssetListItem] = Field(default_factory=list)
+
+
+class JobAssetDetailResponse(ApiModel):
+    user_id: int
+    job: JobAssetListItem
+    cost_summary: JobAssetCostSummary
+    workers: List[JobAssetWorker] = Field(default_factory=list)
+    sections: List[JobAssetSection] = Field(default_factory=list)
+    financial_summary: Optional[JobAssetFinancialSummary] = None
+    documents: List[JobAssetDocument] = Field(default_factory=list)
+    export_history: List[JobExportHistoryItem] = Field(default_factory=list)
+    can_export_excel: bool = True
+    can_export_pdf: bool = True
 
 
 class CalendarJobItem(ApiModel):

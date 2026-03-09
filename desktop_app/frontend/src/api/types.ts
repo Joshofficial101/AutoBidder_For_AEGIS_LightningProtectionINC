@@ -137,6 +137,16 @@ export type BidPreviewResponse = {
   sections: SectionSummary[];
 };
 
+export type BidConfirmResponse = {
+  user_id: number;
+  project_id: number;
+  bid_id: number;
+  job_id: number;
+  project_name: string;
+  final_bid_amount: number;
+  status: string;
+};
+
 export type ParsePdfRequest = {
   pdf_file_path: string;
 };
@@ -182,6 +192,8 @@ export type DashboardSummaryResponse = {
   metrics: {
     active_jobs: number;
     completed_jobs: number;
+    awaiting_approval_jobs: number;
+    completed_not_invoiced_jobs: number;
     total_revenue: number;
     total_profit: number;
     profit_margin_pct: number;
@@ -234,6 +246,105 @@ export type JobApproveRequest = {
 export type JobApproveResponse = {
   user_id: number;
   job: DashboardJobItem;
+};
+
+export type JobAssetListItem = {
+  job_id: number;
+  project_name: string;
+  status: string;
+  status_display: string;
+  bid_amount: number;
+  scheduled_date?: string | null;
+  start_date?: string | null;
+  completion_date?: string | null;
+  invoice_number?: string | null;
+  invoice_date?: string | null;
+  assigned_crew: string[];
+  has_financials: boolean;
+};
+
+export type JobAssetsIndexResponse = {
+  user_id: number;
+  jobs: JobAssetListItem[];
+};
+
+export type JobAssetWorker = {
+  name: string;
+  wage_per_hour: number;
+  hours: number;
+  total_cost: number;
+};
+
+export type JobAssetSection = {
+  name: string;
+  items: number;
+  material_total: number;
+  labor_total: number;
+  section_total: number;
+};
+
+export type JobAssetCostSummary = {
+  material_total: number;
+  labor_total: number;
+  subtotal: number;
+  total_with_markup: number;
+  final_bid_amount: number;
+  labor_markup_pct: number;
+  overhead_pct: number;
+  profit_pct: number;
+  shipping_amount: number;
+  use_tax_pct: number;
+  commission_amount: number;
+  tools_rental_amount: number;
+  tools_rental_type: string;
+};
+
+export type JobAssetFinancialSummary = {
+  payment_status: string;
+  amount_paid: number;
+  payment_date?: string | null;
+  total_costs?: number | null;
+  net_profit?: number | null;
+  profit_margin_pct?: number | null;
+};
+
+export type JobAssetDocument = {
+  document_id: number;
+  document_type: string;
+  file_path: string;
+  tag?: string | null;
+  uploaded_at?: string | null;
+};
+
+export type JobExportHistoryItem = {
+  export_id: number;
+  export_type: string;
+  file_name: string;
+  file_path: string;
+  created_at: string;
+  file_exists: boolean;
+};
+
+export type JobExportCleanupResponse = {
+  user_id: number;
+  job_id: number;
+  older_than_days: number;
+  deleted_records: number;
+  deleted_files: number;
+  skipped_files: number;
+};
+
+export type JobAssetDetailResponse = {
+  user_id: number;
+  job: JobAssetListItem;
+  cost_summary: JobAssetCostSummary;
+  workers: JobAssetWorker[];
+  sections: JobAssetSection[];
+  financial_summary?: JobAssetFinancialSummary | null;
+  documents: JobAssetDocument[];
+  export_history: JobExportHistoryItem[];
+  can_export_excel: boolean;
+  can_export_pdf: boolean;
 };
 
 export type CalendarJobItem = {

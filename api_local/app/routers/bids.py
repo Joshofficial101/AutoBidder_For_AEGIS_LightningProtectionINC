@@ -7,11 +7,11 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import FileResponse, Response
 from starlette.background import BackgroundTask
 
-from app.auth_dependencies import get_current_user
+from app.auth_dependencies import AuthenticatedUser, get_current_user
 from app.errors import ApiException, COMMON_ERROR_RESPONSES
 from app.file_limits import PayloadTooLargeError, assert_excel_base64_within_limit
-from app.schemas import BidPreviewBase64Request, BidPreviewRequest, BidPreviewResponse
-from app.services.bidding_service import export_bid_excel, export_bid_pdf, preview_bid
+from app.schemas import BidConfirmResponse, BidPreviewBase64Request, BidPreviewRequest, BidPreviewResponse
+from app.services.bidding_service import confirm_bid_to_job, export_bid_excel, export_bid_pdf, preview_bid
 from app.temp_files import safe_unlink
 
 router = APIRouter(
@@ -136,6 +136,90 @@ def preview_base64(payload: BidPreviewBase64Request) -> BidPreviewResponse:
             status_code=500,
             code="BID_PREVIEW_FAILED",
             message="Bid preview failed.",
+        )
+    finally:
+        safe_unlink(temp_path)
+
+
+@router.post(
+    "/confirm",
+    response_model=BidConfirmResponse,
+    responses=COMMON_ERROR_RESPONSES,
+)
+def confirm(payload: BidPreviewRequest, current_user: AuthenticatedUser = Depends(get_current_user)) -> BidConfirmResponse:
+    try:
+        request_payload = _build_payload_from_preview_request(payload)
+        result = confirm_bid_to_job(request_payload, current_user.user_id)
+        return BidConfirmResponse(**result)
+    except PayloadTooLargeError as exc:
+        raise ApiException(
+            status_code=413,
+            code="PAYLOAD_TOO_LARGE",
+            message=str(exc),
+            detail=str(exc),
+        )
+    except ValueError as exc:
+        raise ApiException(
+            status_code=400,
+            code="BID_CONFIRM_VALIDATION_ERROR",
+            message=str(exc),
+            detail=str(exc),
+        )
+    except Exception:
+        raise ApiException(
+            status_code=500,
+            code="BID_CONFIRM_FAILED",
+            message="Bid confirmation failed.",
+        )
+
+
+@router.post(
+    "/confirm/base64",
+    response_model=BidConfirmResponse,
+    responses=COMMON_ERROR_RESPONSES,
+)
+def confirm_base64(
+    payload: BidPreviewBase64Request,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+) -> BidConfirmResponse:
+    temp_path: Path | None = None
+    try:
+        assert_excel_base64_within_limit(payload.pricing_file_base64)
+        pricing_bytes = base64.b64decode(payload.pricing_file_base64, validate=True)
+        suffix = Path(payload.file_name or "").suffix.lower() or ".xlsx"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
+            temp_file.write(pricing_bytes)
+            temp_path = Path(temp_file.name)
+
+        request_payload = _build_payload_from_base64_request(payload, temp_path)
+        result = confirm_bid_to_job(request_payload, current_user.user_id)
+        return BidConfirmResponse(**result)
+    except binascii.Error:
+        raise ApiException(
+            status_code=400,
+            code="INVALID_BASE64",
+            message="Invalid base64 pricing payload.",
+            detail="pricing_file_base64 must be valid Base64 data.",
+        )
+    except PayloadTooLargeError as exc:
+        raise ApiException(
+            status_code=413,
+            code="PAYLOAD_TOO_LARGE",
+            message=str(exc),
+            detail=str(exc),
+        )
+    except ValueError as exc:
+        raise ApiException(
+            status_code=400,
+            code="BID_CONFIRM_VALIDATION_ERROR",
+            message=str(exc),
+            detail=str(exc),
+        )
+    except Exception:
+        raise ApiException(
+            status_code=500,
+            code="BID_CONFIRM_FAILED",
+            message="Bid confirmation failed.",
         )
     finally:
         safe_unlink(temp_path)

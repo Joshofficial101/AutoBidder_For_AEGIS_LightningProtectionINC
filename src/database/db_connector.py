@@ -248,6 +248,16 @@ class DBConnector:
         updated_at TEXT NOT NULL,
         FOREIGN KEY (job_id) REFERENCES Jobs (job_id) ON DELETE CASCADE
     );
+
+    -- Dashboard and board query indexes
+    CREATE INDEX IF NOT EXISTS idx_jobs_user_status
+        ON Jobs (user_id, status);
+    CREATE INDEX IF NOT EXISTS idx_jobs_user_updated_at
+        ON Jobs (user_id, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_jobs_user_scheduled_date
+        ON Jobs (user_id, scheduled_date);
+    CREATE INDEX IF NOT EXISTS idx_jobfinancials_job_id
+        ON JobFinancials (job_id);
     """
 
     def __init__(self):

@@ -36,6 +36,8 @@ body {
   position: relative;
   border-right: 1px solid rgba(137, 182, 247, 0.24);
   transition: padding 180ms ease;
+  display: flex;
+  flex-direction: column;
 }
 
 .sidebar-brand-row {
@@ -55,6 +57,25 @@ body {
   height: 30px;
   cursor: pointer;
   font-weight: 700;
+  display: grid;
+  place-items: center;
+  padding: 0;
+}
+
+.sidebar-toggle-lines {
+  display: inline-flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 3px;
+}
+
+.sidebar-toggle-lines span {
+  display: block;
+  width: 12px;
+  height: 2px;
+  border-radius: 999px;
+  background: currentColor;
 }
 
 .sidebar h1 {
@@ -68,8 +89,14 @@ body {
 }
 
 .sidebar nav {
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 10px;
+  flex: 1;
+}
+
+.sidebar-nav-spacer {
+  flex: 1;
 }
 
 .sidebar .nav-item {
@@ -181,6 +208,16 @@ body {
   font-size: 13px;
 }
 
+.content .nav-item.logout-button {
+  background: #f9dddd;
+  border-color: #e8aaaa;
+  color: #7a1f1f;
+}
+
+.content .nav-item.logout-button:hover {
+  background: #f5cdcd;
+}
+
 .panel-grid {
   margin-top: 16px;
   display: grid;
@@ -254,6 +291,139 @@ body {
 .action-stack {
   display: grid;
   gap: 8px;
+}
+
+.action-center-grid {
+  margin-top: 8px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+.action-center-item {
+  border: 1px solid #d7e3f4;
+  border-radius: 10px;
+  background: #fff;
+  padding: 10px 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.action-center-item h3 {
+  margin: 0;
+  font-size: 14px;
+  color: #183a5c;
+}
+
+.action-center-count {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 700;
+  color: #0c1f36;
+}
+
+.action-center-note {
+  margin: 0;
+  font-size: 12px;
+  color: #546a83;
+}
+
+.job-files-layout {
+  display: grid;
+  grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
+  gap: 16px;
+}
+
+.job-files-list-panel {
+  align-self: start;
+}
+
+.job-files-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.job-files-list-item {
+  text-align: left;
+  border: 1px solid #d7e3f4;
+  border-radius: 10px;
+  background: #fff;
+  padding: 10px;
+  display: grid;
+  gap: 4px;
+  cursor: pointer;
+  color: #173452;
+}
+
+.job-files-list-item.active {
+  border-color: #3568a2;
+  box-shadow: inset 0 0 0 1px rgba(53, 104, 162, 0.24);
+  background: #eef5ff;
+}
+
+.job-files-list-item strong {
+  font-size: 13px;
+}
+
+.job-files-list-item span {
+  font-size: 12px;
+  color: #4e6178;
+}
+
+.job-files-detail-content {
+  display: grid;
+  gap: 12px;
+}
+
+.job-files-breakdown-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(180px, 1fr));
+  gap: 10px;
+}
+
+.job-files-card {
+  border: 1px solid #d7e3f4;
+  border-radius: 10px;
+  background: #fff;
+  padding: 10px;
+  display: grid;
+  gap: 8px;
+}
+
+.job-files-card h4 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.job-files-history-controls {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(120px, 1fr));
+  gap: 8px;
+}
+
+.job-files-history-controls label,
+.job-files-history-cleanup label {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  color: #2a4360;
+}
+
+.job-files-history-controls input,
+.job-files-history-controls select,
+.job-files-history-cleanup input {
+  border: 1px solid #c8d7eb;
+  border-radius: 8px;
+  padding: 7px 9px;
+  font-size: 13px;
+}
+
+.job-files-history-cleanup {
+  display: flex;
+  gap: 8px;
+  align-items: end;
+  flex-wrap: wrap;
 }
 
 .panel-stack {
@@ -1439,10 +1609,116 @@ body {
   margin-bottom: 8px;
 }
 
+.worker-preset-row {
+  display: flex;
+  gap: 10px;
+  align-items: end;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+
+.worker-preset-row label {
+  display: grid;
+  gap: 4px;
+  min-width: 260px;
+}
+
+.content .nav-item.worker-status-chip {
+  cursor: default;
+}
+
+.content .nav-item.worker-status-chip.pending {
+  color: #3a5675;
+  background: #e9f0fa;
+  border-color: #b7cbe2;
+}
+
+.content .nav-item.worker-status-chip.applied {
+  color: #245f2f;
+  background: #e9f7eb;
+  border-color: #b7dcba;
+}
+
+.worker-action-note {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid #c2d6ec;
+  background: #edf4fc;
+  color: #244968;
+  font-size: 13px;
+}
+
+.worker-row-with-remove {
+  grid-template-columns: 2fr 1fr 1fr auto;
+}
+
+.bidding-runtime-profile {
+  border: 1px solid #c6d9f0;
+  border-radius: 12px;
+  background: #f4f9ff;
+  padding: 10px 12px;
+  display: grid;
+  gap: 4px;
+}
+
+.settings-shell {
+  margin-top: 16px;
+}
+
+.settings-username {
+  margin-top: 8px !important;
+  color: #1d3e61 !important;
+}
+
+.settings-section {
+  display: grid;
+  gap: 10px;
+}
+
+.settings-section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.settings-section-header h3 {
+  margin: 0;
+  font-size: 16px;
+  color: #173452;
+}
+
+.settings-editor-shell {
+  border: 1px solid #d3e1f2;
+  border-radius: 10px;
+  background: #f8fbff;
+  padding: 10px;
+  display: grid;
+  gap: 10px;
+}
+
+.settings-editor-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.settings-editor-empty {
+  margin: 0;
+  color: #406080;
+  font-size: 13px;
+}
+
 .worker-row {
   display: grid;
   grid-template-columns: 2fr 1fr 1fr;
   gap: 8px;
+}
+
+.jobs-card-actions {
+  margin-top: 8px;
 }
 
 .action-row {
@@ -1673,6 +1949,23 @@ body {
     grid-template-columns: repeat(2, minmax(220px, 1fr));
   }
 
+  .job-files-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .job-files-breakdown-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .job-files-history-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .job-files-history-cleanup {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
   .calendar-month-grid {
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
@@ -1698,6 +1991,10 @@ body {
 
   .kpi-grid {
     grid-template-columns: repeat(2, minmax(140px, 1fr));
+  }
+
+  .action-center-grid {
+    grid-template-columns: 1fr;
   }
 
   .form-grid {
@@ -1730,6 +2027,19 @@ body {
 
   .worker-row {
     grid-template-columns: 1fr;
+  }
+
+  .worker-row-with-remove {
+    grid-template-columns: 1fr;
+  }
+
+  .worker-preset-row {
+    align-items: stretch;
+  }
+
+  .worker-preset-row label {
+    min-width: 0;
+    width: 100%;
   }
 
   .inline-form {

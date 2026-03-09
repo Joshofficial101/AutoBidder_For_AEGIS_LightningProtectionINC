@@ -1,6 +1,12 @@
 import { ChangeEvent, FormEvent, MouseEvent, useEffect, useRef, useState } from "react";
 import {
   approveJob,
+  cleanupJobExports,
+  confirmBid,
+  confirmBidUpload,
+  downloadJobExcel,
+  downloadJobHistoricalExport,
+  downloadJobPdf,
   exportBidExcel,
   exportBidExcelUpload,
   exportBidPdf,
@@ -8,6 +14,8 @@ import {
   getCalendarJobs,
   getDashboardSummary,
   getHealthReadiness,
+  getJobAssetDetail,
+  getJobAssetsIndex,
   getJobsBoard,
   login,
   logoutSession,
@@ -30,17 +38,47 @@ import {
   DashboardJobItem,
   DashboardSummaryResponse,
   HealthReadinessResponse,
+  JobAssetDetailResponse,
+  JobAssetListItem,
+  JobAssetsIndexResponse,
   JobBoardStatus,
   JobsBoardResponse,
 } from "./api/types";
 
-type NavKey = "dashboard" | "bidding" | "jobs" | "calendar" | "reports";
+type NavKey = "dashboard" | "bidding" | "jobs" | "jobfiles" | "calendar" | "reports" | "settings";
 
 type WorkerInput = {
   name: string;
   wage_per_hour: string;
   hours: string;
 };
+type WorkerPresetWorker = {
+  name: string;
+  wage_per_hour: number;
+  hours: number;
+};
+type WorkerPreset = {
+  preset_id: string;
+  name: string;
+  workers: WorkerPresetWorker[];
+  created_at: string;
+  updated_at: string;
+};
+type WorkerPresetLibrary = {
+  presets: WorkerPreset[];
+};
+type SavedWorker = {
+  worker_id: string;
+  name: string;
+  wage_per_hour: number;
+  hours: number;
+  created_at: string;
+  updated_at: string;
+};
+type SavedWorkerLibrary = {
+  workers: SavedWorker[];
+};
+type EditorMode = "closed" | "create" | "edit";
 
 type CalendarViewMode = "month" | "week" | "day";
 type AlertLevel = "none" | "warning" | "overdue";
@@ -114,6 +152,9 @@ type BiddingProfileLibrary = {
 const WORKFLOW_ALERT_SETTINGS_STORAGE_PREFIX = "lightningbid.workflow_alert_settings.v1.user";
 const BIDDING_PROFILES_STORAGE_PREFIX = "lightningbid.bidding_profiles.v1.user";
 const LEGACY_BIDDING_PROFILE_STORAGE_PREFIX = "lightningbid.bidding_profile.v1.user";
+const WORKER_PRESETS_STORAGE_PREFIX = "lightningbid.worker_presets.v1.user";
+const SAVED_WORKERS_STORAGE_PREFIX = "lightningbid.saved_workers.v1.user";
+const DEFAULT_PRICING_FILE_STORAGE_PREFIX = "lightningbid.default_pricing_file.v1.user";
 const DEFAULT_WORKFLOW_ALERT_SETTINGS: WorkflowAlertSettings = {
   scheduled_to_start_days: 1,
   in_progress_to_inspection_days: 3,
@@ -136,6 +177,8 @@ const DEFAULT_BIDDING_PROFILE_SETTINGS: BiddingProfileSettings = {
   custom_pricing_adjustments: [],
 };
 const DEFAULT_BIDDING_PROFILE_NAME = "Default";
+const DEFAULT_WORKER_PRESET_NAME = "Crew Preset";
+const EMPTY_WORKER_INPUT: WorkerInput = { name: "", wage_per_hour: "", hours: "" };
 const workflowAlertSettingFields: Array<{
   key: WorkflowAlertSettingsField;
   label: string;
@@ -184,9 +227,11 @@ const navItems: Array<{ key: NavKey; label: string; icon: string }> = [
   { key: "dashboard", label: "Dashboard", icon: "DG" },
   { key: "bidding", label: "Bidding", icon: "BD" },
   { key: "jobs", label: "Jobs", icon: "JB" },
+  { key: "jobfiles", label: "Job Files", icon: "JF" },
   { key: "calendar", label: "Calendar", icon: "CL" },
   { key: "reports", label: "Reports", icon: "RP" },
 ];
+const settingsNavItem = { key: "settings" as const, label: "Settings", icon: "ST" };
 
 const jobsBoardColumns: Array<{
   key: JobsBoardColumnKey;
@@ -456,6 +501,76 @@ function downloadBlob(filename: string, blob: Blob): void {
   URL.revokeObjectURL(url);
 }
 
+type SavePickerTypeDescriptor = {
+  description: string;
+  mimeType: string;
+  extensions: string[];
+};
+
+type SavePickerOptions = {
+  suggestedName?: string;
+  types?: Array<{
+    description?: string;
+    accept: Record<string, string[]>;
+  }>;
+};
+
+type SavePickerWritable = {
+  write(data: Blob): Promise<void>;
+  close(): Promise<void>;
+};
+
+type SavePickerHandle = {
+  createWritable(): Promise<SavePickerWritable>;
+};
+
+type SavePickerFunction = (options?: SavePickerOptions) => Promise<SavePickerHandle>;
+
+type SaveBlobResult = "picker" | "fallback";
+
+async function saveBlobWithDialog(
+  filename: string,
+  blob: Blob,
+  descriptor: SavePickerTypeDescriptor,
+): Promise<SaveBlobResult> {
+  const picker = (window as Window & { showSaveFilePicker?: SavePickerFunction }).showSaveFilePicker;
+  if (typeof picker !== "function") {
+    downloadBlob(filename, blob);
+    return "fallback";
+  }
+
+  try {
+    const handle = await picker({
+      suggestedName: filename,
+      types: [
+        {
+          description: descriptor.description,
+          accept: {
+            [descriptor.mimeType]: descriptor.extensions,
+          },
+        },
+      ],
+    });
+    const writable = await handle.createWritable();
+    await writable.write(blob);
+    await writable.close();
+    return "picker";
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw err;
+    }
+    downloadBlob(filename, blob);
+    return "fallback";
+  }
+}
+
+function isAbortError(err: unknown): boolean {
+  if (err instanceof DOMException) {
+    return err.name === "AbortError";
+  }
+  return err instanceof Error && err.name === "AbortError";
+}
+
 function downloadRecoveryTxt(packet: RecoveryPacket): void {
   const lines = [
     "LightningBid Backup Recovery Code",
@@ -718,6 +833,42 @@ function writeWorkflowAlertSettings(userId: number, settings: WorkflowAlertSetti
     );
   } catch {
     // Keep silent; alert settings can still be used for the current session.
+  }
+}
+
+function defaultPricingFileStorageKey(userId: number): string {
+  return `${DEFAULT_PRICING_FILE_STORAGE_PREFIX}.${userId}`;
+}
+
+function readDefaultPricingFilePath(userId: number): string {
+  try {
+    const raw = window.localStorage.getItem(defaultPricingFileStorageKey(userId));
+    if (!raw) {
+      return "";
+    }
+    const parsed = JSON.parse(raw) as { pricing_file_path?: unknown };
+    if (typeof parsed.pricing_file_path !== "string") {
+      return "";
+    }
+    return parsed.pricing_file_path.trim();
+  } catch {
+    return "";
+  }
+}
+
+function writeDefaultPricingFilePath(userId: number, pricingFilePath: string): void {
+  try {
+    const normalized = pricingFilePath.trim();
+    if (!normalized) {
+      window.localStorage.removeItem(defaultPricingFileStorageKey(userId));
+      return;
+    }
+    window.localStorage.setItem(
+      defaultPricingFileStorageKey(userId),
+      JSON.stringify({ pricing_file_path: normalized }),
+    );
+  } catch {
+    // Keep silent; this setting is convenience only.
   }
 }
 
@@ -1107,6 +1258,230 @@ function writeBiddingProfileLibrary(userId: number, library: BiddingProfileLibra
   }
 }
 
+function workerPresetsStorageKey(userId: number): string {
+  return `${WORKER_PRESETS_STORAGE_PREFIX}.${userId}`;
+}
+
+function createWorkerPresetId(): string {
+  return `preset_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function normalizeWorkerPresetName(value: string): string {
+  const trimmed = value.trim();
+  return trimmed || DEFAULT_WORKER_PRESET_NAME;
+}
+
+function workerPresetWorkersToInputRows(workers: WorkerPresetWorker[]): WorkerInput[] {
+  if (workers.length === 0) {
+    return [{ ...EMPTY_WORKER_INPUT }];
+  }
+  return workers.map((worker) => ({
+    name: worker.name,
+    wage_per_hour: String(worker.wage_per_hour),
+    hours: String(worker.hours),
+  }));
+}
+
+function workerInputRowsToPresetWorkers(workers: WorkerInput[]): WorkerPresetWorker[] {
+  return workers
+    .map((worker) => ({
+      name: worker.name.trim(),
+      wage_per_hour: toNumber(worker.wage_per_hour) ?? 0,
+      hours: toNumber(worker.hours) ?? 0,
+    }))
+    .filter((worker) => worker.name.length > 0);
+}
+
+function normalizeWorkerPresetWorkers(raw: unknown): WorkerPresetWorker[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+
+  return raw
+    .map((candidate) => {
+      if (!candidate || typeof candidate !== "object") {
+        return null;
+      }
+      const parsed = candidate as Partial<{
+        name: unknown;
+        wage_per_hour: unknown;
+        hours: unknown;
+      }>;
+      const name = String(parsed.name ?? "").trim();
+      if (!name) {
+        return null;
+      }
+      return {
+        name,
+        wage_per_hour: Math.max(0, parseNumberWithFallback(parsed.wage_per_hour, 0)),
+        hours: Math.max(0, parseNumberWithFallback(parsed.hours, 0)),
+      } satisfies WorkerPresetWorker;
+    })
+    .filter((worker): worker is WorkerPresetWorker => worker !== null);
+}
+
+function normalizeWorkerPresetLibrary(raw: unknown): WorkerPresetLibrary {
+  if (!raw || typeof raw !== "object") {
+    return { presets: [] };
+  }
+
+  const parsed = raw as {
+    presets?: Array<{
+      preset_id?: unknown;
+      name?: unknown;
+      workers?: unknown;
+      created_at?: unknown;
+      updated_at?: unknown;
+    }>;
+  };
+
+  const presets: WorkerPreset[] = [];
+  const seenIds = new Set<string>();
+  for (const candidate of parsed.presets ?? []) {
+    if (!candidate || typeof candidate !== "object") {
+      continue;
+    }
+    const workers = normalizeWorkerPresetWorkers(candidate.workers);
+    if (workers.length === 0) {
+      continue;
+    }
+    const presetId =
+      typeof candidate.preset_id === "string" && candidate.preset_id.trim()
+        ? candidate.preset_id.trim()
+        : createWorkerPresetId();
+    if (seenIds.has(presetId)) {
+      continue;
+    }
+    seenIds.add(presetId);
+    presets.push({
+      preset_id: presetId,
+      name: normalizeWorkerPresetName(typeof candidate.name === "string" ? candidate.name : ""),
+      workers,
+      created_at:
+        typeof candidate.created_at === "string" && candidate.created_at.trim()
+          ? candidate.created_at
+          : new Date().toISOString(),
+      updated_at:
+        typeof candidate.updated_at === "string" && candidate.updated_at.trim()
+          ? candidate.updated_at
+          : new Date().toISOString(),
+    });
+  }
+
+  return { presets };
+}
+
+function readWorkerPresetLibrary(userId: number): WorkerPresetLibrary {
+  try {
+    const raw = window.localStorage.getItem(workerPresetsStorageKey(userId));
+    if (!raw) {
+      return { presets: [] };
+    }
+    return normalizeWorkerPresetLibrary(JSON.parse(raw));
+  } catch {
+    return { presets: [] };
+  }
+}
+
+function writeWorkerPresetLibrary(userId: number, library: WorkerPresetLibrary): void {
+  try {
+    window.localStorage.setItem(
+      workerPresetsStorageKey(userId),
+      JSON.stringify(normalizeWorkerPresetLibrary(library)),
+    );
+  } catch {
+    // Keep silent; local persistence is a convenience only.
+  }
+}
+
+function savedWorkersStorageKey(userId: number): string {
+  return `${SAVED_WORKERS_STORAGE_PREFIX}.${userId}`;
+}
+
+function createSavedWorkerId(): string {
+  return `worker_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function normalizeSavedWorkerName(value: string): string {
+  return value.trim();
+}
+
+function normalizeSavedWorkerLibrary(raw: unknown): SavedWorkerLibrary {
+  if (!raw || typeof raw !== "object") {
+    return { workers: [] };
+  }
+
+  const parsed = raw as {
+    workers?: Array<{
+      worker_id?: unknown;
+      name?: unknown;
+      wage_per_hour?: unknown;
+      hours?: unknown;
+      created_at?: unknown;
+      updated_at?: unknown;
+    }>;
+  };
+
+  const workers: SavedWorker[] = [];
+  const seenIds = new Set<string>();
+  for (const candidate of parsed.workers ?? []) {
+    if (!candidate || typeof candidate !== "object") {
+      continue;
+    }
+    const name = normalizeSavedWorkerName(String(candidate.name ?? ""));
+    if (!name) {
+      continue;
+    }
+    const workerId =
+      typeof candidate.worker_id === "string" && candidate.worker_id.trim()
+        ? candidate.worker_id.trim()
+        : createSavedWorkerId();
+    if (seenIds.has(workerId)) {
+      continue;
+    }
+    seenIds.add(workerId);
+    workers.push({
+      worker_id: workerId,
+      name,
+      wage_per_hour: Math.max(0, parseNumberWithFallback(candidate.wage_per_hour, 0)),
+      hours: Math.max(0, parseNumberWithFallback(candidate.hours, 0)),
+      created_at:
+        typeof candidate.created_at === "string" && candidate.created_at.trim()
+          ? candidate.created_at
+          : new Date().toISOString(),
+      updated_at:
+        typeof candidate.updated_at === "string" && candidate.updated_at.trim()
+          ? candidate.updated_at
+          : new Date().toISOString(),
+    });
+  }
+
+  return { workers };
+}
+
+function readSavedWorkerLibrary(userId: number): SavedWorkerLibrary {
+  try {
+    const raw = window.localStorage.getItem(savedWorkersStorageKey(userId));
+    if (!raw) {
+      return { workers: [] };
+    }
+    return normalizeSavedWorkerLibrary(JSON.parse(raw));
+  } catch {
+    return { workers: [] };
+  }
+}
+
+function writeSavedWorkerLibrary(userId: number, library: SavedWorkerLibrary): void {
+  try {
+    window.localStorage.setItem(
+      savedWorkersStorageKey(userId),
+      JSON.stringify(normalizeSavedWorkerLibrary(library)),
+    );
+  } catch {
+    // Keep silent; local persistence is a convenience only.
+  }
+}
+
 function jobDateKeys(job: CalendarJobItem): string[] {
   const keys = [
     normalizeJobDate(job.scheduled_date),
@@ -1142,6 +1517,25 @@ function looksLikeFilePath(value: string): boolean {
     return false;
   }
   return /^[a-zA-Z]:[\\/]/.test(trimmed) || trimmed.startsWith("\\\\") || trimmed.includes("/");
+}
+
+type TauriInvokeFn = (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
+
+async function pickExcelFilePathFromDesktop(): Promise<string | null> {
+  const invoke = (window as Window & { __TAURI_INTERNALS__?: { invoke?: TauriInvokeFn } }).__TAURI_INTERNALS__?.invoke;
+  if (typeof invoke !== "function") {
+    return null;
+  }
+  try {
+    const result = await invoke("pick_excel_file");
+    if (typeof result !== "string") {
+      return null;
+    }
+    const normalized = result.trim();
+    return normalized.length > 0 ? normalized : null;
+  } catch {
+    return null;
+  }
 }
 
 type AuthNetworkNode = {
@@ -1632,18 +2026,27 @@ function JobList({
 function DashboardView({ onNavigate, userId }: { onNavigate: (view: NavKey) => void; userId: number }) {
   const [summary, setSummary] = useState<DashboardSummaryResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const loadSummary = async () => {
+  const loadSummary = async (background = false) => {
     try {
-      setLoading(true);
+      if (background) {
+        setRefreshing(true);
+      } else {
+        setLoading(true);
+      }
       setError(null);
       const payload = await getDashboardSummary();
       setSummary(payload);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load dashboard");
     } finally {
-      setLoading(false);
+      if (background) {
+        setRefreshing(false);
+      } else {
+        setLoading(false);
+      }
     }
   };
 
@@ -1651,24 +2054,70 @@ function DashboardView({ onNavigate, userId }: { onNavigate: (view: NavKey) => v
     void loadSummary();
   }, [userId]);
 
-  if (loading) {
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      void loadSummary(true);
+    }, 30000);
+    return () => window.clearInterval(timer);
+  }, [userId]);
+
+  useEffect(() => {
+    const refreshOnFocus = () => {
+      if (document.visibilityState === "visible") {
+        void loadSummary(true);
+      }
+    };
+
+    window.addEventListener("focus", refreshOnFocus);
+    document.addEventListener("visibilitychange", refreshOnFocus);
+    return () => {
+      window.removeEventListener("focus", refreshOnFocus);
+      document.removeEventListener("visibilitychange", refreshOnFocus);
+    };
+  }, [userId]);
+
+  if (loading && !summary) {
     return <section className="panel"><p>Loading dashboard...</p></section>;
   }
 
-  if (error || !summary) {
+  if (error && !summary) {
     return (
       <section className="panel">
         <h2>Dashboard Error</h2>
-        <p>{error ?? "No dashboard data available."}</p>
+        <p>{error}</p>
         <button className="nav-item" onClick={() => void loadSummary()} type="button">
           Retry
         </button>
       </section>
     );
   }
+  if (!summary) {
+    return (
+      <section className="panel">
+        <h2>Dashboard Error</h2>
+        <p>No dashboard data available.</p>
+      </section>
+    );
+  }
+
+  const crewAttentionIds = new Set<number>();
+  for (const job of [...summary.overdue_jobs, ...summary.todays_jobs, ...summary.upcoming_jobs]) {
+    if ((job.assigned_crew?.length ?? 0) === 0) {
+      crewAttentionIds.add(job.job_id);
+    }
+  }
+  const crewAttentionCount = crewAttentionIds.size;
+  const topOverdueJob = summary.overdue_jobs[0];
+  const topTodayJob = summary.todays_jobs[0];
+  const topUpcomingJob = summary.upcoming_jobs[0];
 
   return (
     <>
+      {error ? (
+        <section className="panel error-panel">
+          <p>{error}</p>
+        </section>
+      ) : null}
       <section className="kpi-grid">
         <article className="panel">
           <h2>Total Revenue</h2>
@@ -1685,6 +2134,18 @@ function DashboardView({ onNavigate, userId }: { onNavigate: (view: NavKey) => v
         <article className="panel">
           <h2>Profit Margin</h2>
           <p className="kpi-value">{summary.metrics.profit_margin_pct.toFixed(1)}%</p>
+        </article>
+        <article className="panel">
+          <h2>Completed Jobs</h2>
+          <p className="kpi-value">{summary.metrics.completed_jobs}</p>
+        </article>
+        <article className="panel">
+          <h2>Awaiting Approval</h2>
+          <p className="kpi-value">{summary.metrics.awaiting_approval_jobs}</p>
+        </article>
+        <article className="panel">
+          <h2>Completed Not Invoiced</h2>
+          <p className="kpi-value">{summary.metrics.completed_not_invoiced_jobs}</p>
         </article>
       </section>
 
@@ -1713,36 +2174,94 @@ function DashboardView({ onNavigate, userId }: { onNavigate: (view: NavKey) => v
             <button className="nav-item" onClick={() => onNavigate("jobs")} type="button">
               Open Jobs Board
             </button>
-            <button className="nav-item" onClick={() => void loadSummary()} type="button">
-              Refresh Dashboard
+            <button className="nav-item" onClick={() => void loadSummary()} type="button" disabled={refreshing}>
+              {refreshing ? "Refreshing..." : "Refresh Dashboard"}
             </button>
+            <p className="file-picker-hint">Auto-refreshes every 30 seconds and on window focus.</p>
           </div>
         </article>
       </section>
 
       <section className="panel">
-        <h2>Recent Activity</h2>
-        <ul className="job-list">
-          {summary.recent_jobs.map((job) => (
-            <li key={job.job_id}>
-              <div className="job-primary">
-                <strong>{job.project_name}</strong>
-                <span>{job.status_display}</span>
-              </div>
-              <div className="job-secondary">
-                <span>{money.format(job.bid_amount || 0)}</span>
-                <span>{formatDate(job.scheduled_date)}</span>
-              </div>
-            </li>
-          ))}
-        </ul>
+        <div className="settings-section-header">
+          <h2>Action Center</h2>
+          <button className="nav-item compact" onClick={() => void loadSummary()} type="button" disabled={refreshing}>
+            {refreshing ? "Refreshing..." : "Refresh"}
+          </button>
+        </div>
+        <div className="action-center-grid">
+          <article className="action-center-item">
+            <h3>Awaiting Approval</h3>
+            <p className="action-center-count">{summary.metrics.awaiting_approval_jobs}</p>
+            <p className="action-center-note">Jobs waiting for approval before they can be scheduled.</p>
+            <button className="nav-item compact" onClick={() => onNavigate("jobs")} type="button">
+              Review in Jobs
+            </button>
+          </article>
+          <article className="action-center-item">
+            <h3>Overdue Jobs</h3>
+            <p className="action-center-count">{summary.overdue_jobs.length}</p>
+            <p className="action-center-note">
+              {topOverdueJob
+                ? `Most urgent: ${topOverdueJob.project_name}`
+                : "No overdue jobs right now."}
+            </p>
+            <button className="nav-item compact" onClick={() => onNavigate("jobs")} type="button">
+              Resolve in Jobs
+            </button>
+          </article>
+          <article className="action-center-item">
+            <h3>Completed Not Invoiced</h3>
+            <p className="action-center-count">{summary.metrics.completed_not_invoiced_jobs}</p>
+            <p className="action-center-note">Completed jobs still waiting for invoice entry.</p>
+            <button className="nav-item compact" onClick={() => onNavigate("jobs")} type="button">
+              Invoice in Jobs
+            </button>
+          </article>
+          <article className="action-center-item">
+            <h3>Crew Assignment Needed</h3>
+            <p className="action-center-count">{crewAttentionCount}</p>
+            <p className="action-center-note">
+              {crewAttentionCount > 0
+                ? "Visible due/overdue jobs without assigned crew."
+                : "All visible due jobs have assigned crew."}
+            </p>
+            <button className="nav-item compact" onClick={() => onNavigate("jobs")} type="button">
+              Assign Crew
+            </button>
+          </article>
+          <article className="action-center-item">
+            <h3>Today&apos;s Schedule</h3>
+            <p className="action-center-count">{summary.todays_jobs.length}</p>
+            <p className="action-center-note">
+              {topTodayJob
+                ? `Next today: ${topTodayJob.project_name}`
+                : "No jobs scheduled for today."}
+            </p>
+            <button className="nav-item compact" onClick={() => onNavigate("calendar")} type="button">
+              Open Calendar
+            </button>
+          </article>
+          <article className="action-center-item">
+            <h3>Upcoming (7 Days)</h3>
+            <p className="action-center-count">{summary.upcoming_jobs.length}</p>
+            <p className="action-center-note">
+              {topUpcomingJob
+                ? `Next up: ${topUpcomingJob.project_name}`
+                : "No upcoming jobs in the next 7 days."}
+            </p>
+            <button className="nav-item compact" onClick={() => onNavigate("calendar")} type="button">
+              Plan Schedule
+            </button>
+          </article>
+        </div>
       </section>
     </>
   );
 }
 
-function BiddingView({ userId }: { userId: number }) {
-  const [pricingPath, setPricingPath] = useState("");
+function BiddingView({ userId, onOpenJobs }: { userId: number; onOpenJobs: () => void }) {
+  const [pricingPath, setPricingPath] = useState(() => readDefaultPricingFilePath(userId));
   const [pricingSheet, setPricingSheet] = useState("");
   const [pdfPath, setPdfPath] = useState("");
   const [pricingFile, setPricingFile] = useState<File | null>(null);
@@ -1754,10 +2273,11 @@ function BiddingView({ userId }: { userId: number }) {
   const [numCorners, setNumCorners] = useState("4");
   const [preferredMaterial, setPreferredMaterial] = useState("copper");
   const [hasMetalRoof, setHasMetalRoof] = useState(false);
-  const [workers, setWorkers] = useState<WorkerInput[]>([{ name: "", wage_per_hour: "", hours: "" }]);
+  const [workers, setWorkers] = useState<WorkerInput[]>([{ ...EMPTY_WORKER_INPUT }]);
   const [preview, setPreview] = useState<BidPreviewResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isBusy, setIsBusy] = useState(false);
+  const [isConfirmingBid, setIsConfirmingBid] = useState(false);
   const [isExportingExcel, setIsExportingExcel] = useState(false);
   const [isExportingPdf, setIsExportingPdf] = useState(false);
   const [exportNotice, setExportNotice] = useState<{
@@ -1768,20 +2288,23 @@ function BiddingView({ userId }: { userId: number }) {
   const [parseProgress, setParseProgress] = useState(0);
   const [parseStatus, setParseStatus] = useState("");
   const [parseFileLabel, setParseFileLabel] = useState("");
-  const [profileLibrary, setProfileLibrary] = useState<BiddingProfileLibrary>(() => readBiddingProfileLibrary(userId));
-  const [profileForm, setProfileForm] = useState<BiddingProfileForm>(() => {
-    const library = readBiddingProfileLibrary(userId);
-    return biddingProfileToFormValues(getActiveBiddingProfile(library).settings);
-  });
-  const [profileNameInput, setProfileNameInput] = useState<string>(() => {
-    const library = readBiddingProfileLibrary(userId);
-    return getActiveBiddingProfile(library).name;
-  });
-  const [customAdjustmentsForm, setCustomAdjustmentsForm] = useState<BiddingCustomPricingAdjustmentForm[]>(() => {
-    const library = readBiddingProfileLibrary(userId);
-    return settingsToCustomAdjustmentForms(getActiveBiddingProfile(library).settings);
-  });
-  const [profileMessage, setProfileMessage] = useState<string | null>(null);
+  const [profileLibrary, setProfileLibrary] = useState<BiddingProfileLibrary>(() =>
+    readBiddingProfileLibrary(userId),
+  );
+  const [selectedProfileId, setSelectedProfileId] = useState<string>(() =>
+    readBiddingProfileLibrary(userId).active_profile_id,
+  );
+  const [workerPresetLibrary, setWorkerPresetLibrary] = useState<WorkerPresetLibrary>(() =>
+    readWorkerPresetLibrary(userId),
+  );
+  const [selectedWorkerPresetId, setSelectedWorkerPresetId] = useState<string>("");
+  const [appliedWorkerPresetId, setAppliedWorkerPresetId] = useState<string>("");
+  const [savedWorkerLibrary, setSavedWorkerLibrary] = useState<SavedWorkerLibrary>(() =>
+    readSavedWorkerLibrary(userId),
+  );
+  const [selectedSavedWorkerId, setSelectedSavedWorkerId] = useState<string>("");
+  const [appliedSavedWorkerId, setAppliedSavedWorkerId] = useState<string>("");
+  const [workerActionNotice, setWorkerActionNotice] = useState<string | null>(null);
   const pricingPickerRef = useRef<HTMLInputElement | null>(null);
   const pdfPickerRef = useRef<HTMLInputElement | null>(null);
   const parseProgressTimerRef = useRef<number | null>(null);
@@ -1837,323 +2360,136 @@ function BiddingView({ userId }: { userId: number }) {
   );
   useEffect(() => {
     const library = readBiddingProfileLibrary(userId);
-    const active = getActiveBiddingProfile(library);
     setProfileLibrary(library);
-    setProfileForm(biddingProfileToFormValues(active.settings));
-    setProfileNameInput(active.name);
-    setCustomAdjustmentsForm(settingsToCustomAdjustmentForms(active.settings));
-    setProfileMessage(null);
+    setSelectedProfileId(library.active_profile_id);
+    setWorkerPresetLibrary(readWorkerPresetLibrary(userId));
+    setSavedWorkerLibrary(readSavedWorkerLibrary(userId));
+    setPricingPath(readDefaultPricingFilePath(userId));
+    setPricingFile(null);
+    setSelectedWorkerPresetId("");
+    setAppliedWorkerPresetId("");
+    setSelectedSavedWorkerId("");
+    setAppliedSavedWorkerId("");
+    setWorkerActionNotice(null);
+    setWorkers([{ ...EMPTY_WORKER_INPUT }]);
   }, [userId]);
 
   const updateWorker = (index: number, patch: Partial<WorkerInput>) => {
     setWorkers((prev) =>
       prev.map((worker, i) => (i === index ? { ...worker, ...patch } : worker))
     );
+    setAppliedWorkerPresetId("");
+    setWorkerActionNotice(null);
   };
 
-  const setProfileField = (key: BiddingProfileFormField, value: string) => {
-    setProfileForm((prev) => ({
-      ...prev,
-      [key]: value,
-    }));
+  const refreshBiddingProfileLibrary = () => {
+    const latest = readBiddingProfileLibrary(userId);
+    setProfileLibrary(latest);
+    setSelectedProfileId(latest.active_profile_id);
     setError(null);
-    setProfileMessage(null);
+    return latest;
   };
 
-  const addCustomAdjustmentRow = () => {
-    setCustomAdjustmentsForm((prev) => [
-      ...prev,
-      {
-        adjustment_id: createCustomAdjustmentId(),
-        name: "",
-        mode: "$",
-        value: "",
-      },
-    ]);
-    setError(null);
-    setProfileMessage(null);
-  };
-
-  const updateCustomAdjustment = (
-    adjustmentId: string,
-    patch: Partial<Pick<BiddingCustomPricingAdjustmentForm, "name" | "mode" | "value">>,
-  ) => {
-    setCustomAdjustmentsForm((prev) =>
-      prev.map((row) =>
-        row.adjustment_id === adjustmentId
-          ? {
-              ...row,
-              ...patch,
-            }
-          : row,
-      ),
-    );
-    setError(null);
-    setProfileMessage(null);
-  };
-
-  const removeCustomAdjustment = (adjustmentId: string) => {
-    setCustomAdjustmentsForm((prev) => prev.filter((row) => row.adjustment_id !== adjustmentId));
-    setError(null);
-    setProfileMessage(null);
-  };
-
-  const updateProfileLibrary = (nextLibrary: BiddingProfileLibrary) => {
-    const normalized = normalizeBiddingProfileLibrary(nextLibrary);
-    setProfileLibrary(normalized);
-    writeBiddingProfileLibrary(userId, normalized);
-    return normalized;
-  };
-
-  const switchActiveProfile = (profileId: string) => {
-    const next = updateProfileLibrary({
+  const handleBiddingProfileSelect = (profileId: string) => {
+    const next = normalizeBiddingProfileLibrary({
       ...profileLibrary,
       active_profile_id: profileId,
     });
-    const active = getActiveBiddingProfile(next);
-    setProfileForm(biddingProfileToFormValues(active.settings));
-    setProfileNameInput(active.name);
-    setCustomAdjustmentsForm(settingsToCustomAdjustmentForms(active.settings));
+    setProfileLibrary(next);
+    setSelectedProfileId(next.active_profile_id);
+    writeBiddingProfileLibrary(userId, next);
     setError(null);
-    setProfileMessage(`Active profile: ${active.name}.`);
   };
 
-  const parseProfileForm = (): BiddingProfileSettings | null => {
-    const parseFloatField = (
-      key:
-        | "labor_markup_pct"
-        | "overhead_pct"
-        | "profit_pct"
-        | "commission_amount"
-        | "tools_rental_amount"
-        | "shipping_amount"
-        | "use_tax_pct"
-        | "minimum_bid_amount"
-        | "rounding_increment",
-      label: string,
-      min: number,
-      max?: number,
-    ): number | null => {
-      const raw = profileForm[key];
-      const parsed = Number(raw);
-      if (!Number.isFinite(parsed)) {
-        setError(`${label} must be a valid number.`);
-        return null;
-      }
-      if (parsed < min) {
-        setError(`${label} must be at least ${min}.`);
-        return null;
-      }
-      if (typeof max === "number" && parsed > max) {
-        setError(`${label} must be at most ${max}.`);
-        return null;
-      }
-      return parsed;
+  const refreshWorkerPresetLibrary = () => {
+    const latest = readWorkerPresetLibrary(userId);
+    setWorkerPresetLibrary(latest);
+    if (!latest.presets.some((candidate) => candidate.preset_id === selectedWorkerPresetId)) {
+      setSelectedWorkerPresetId("");
+      setAppliedWorkerPresetId("");
+    }
+    setWorkerActionNotice(`Crew presets refreshed (${latest.presets.length}).`);
+    setError(null);
+    return latest;
+  };
+
+  const refreshSavedWorkerLibrary = () => {
+    const latest = readSavedWorkerLibrary(userId);
+    setSavedWorkerLibrary(latest);
+    if (!latest.workers.some((candidate) => candidate.worker_id === selectedSavedWorkerId)) {
+      setSelectedSavedWorkerId("");
+      setAppliedSavedWorkerId("");
+    }
+    setWorkerActionNotice(`Saved workers refreshed (${latest.workers.length}).`);
+    setError(null);
+    return latest;
+  };
+
+  const handleWorkerPresetSelect = (presetId: string) => {
+    setSelectedWorkerPresetId(presetId);
+    setError(null);
+    if (!presetId) {
+      setAppliedWorkerPresetId("");
+      setWorkerActionNotice(null);
+      return;
+    }
+    const preset = workerPresetLibrary.presets.find((candidate) => candidate.preset_id === presetId);
+    if (!preset) {
+      setError("Selected worker preset was not found. Refresh presets and try again.");
+      setAppliedWorkerPresetId("");
+      return;
+    }
+    setWorkers(workerPresetWorkersToInputRows(preset.workers));
+    setAppliedWorkerPresetId(presetId);
+    setWorkerActionNotice(`Crew preset "${preset.name}" applied.`);
+  };
+
+  const handleSavedWorkerSelect = (workerId: string) => {
+    setSelectedSavedWorkerId(workerId);
+    setError(null);
+    if (!workerId) {
+      setAppliedSavedWorkerId("");
+      setWorkerActionNotice(null);
+      return;
+    }
+    const savedWorker = savedWorkerLibrary.workers.find((candidate) => candidate.worker_id === workerId);
+    if (!savedWorker) {
+      setError("Saved worker not found. Refresh saved workers and try again.");
+      setAppliedSavedWorkerId("");
+      return;
+    }
+    const row: WorkerInput = {
+      name: savedWorker.name,
+      wage_per_hour: String(savedWorker.wage_per_hour),
+      hours: String(savedWorker.hours),
     };
-
-    const laborMarkup = parseFloatField("labor_markup_pct", "Labor markup", 0, 200);
-    if (laborMarkup === null) {
-      return null;
-    }
-    const overhead = parseFloatField("overhead_pct", "Overhead", 0, 200);
-    if (overhead === null) {
-      return null;
-    }
-    const profit = parseFloatField("profit_pct", "Profit", 0, 300);
-    if (profit === null) {
-      return null;
-    }
-    const commission = parseFloatField("commission_amount", "Commission", 0);
-    if (commission === null) {
-      return null;
-    }
-    const toolsRental = parseFloatField("tools_rental_amount", "Tools/Rental amount", 0);
-    if (toolsRental === null) {
-      return null;
-    }
-    const shipping = parseFloatField("shipping_amount", "Shipping amount", 0);
-    if (shipping === null) {
-      return null;
-    }
-    const useTax = parseFloatField("use_tax_pct", "Use tax", 0, 100);
-    if (useTax === null) {
-      return null;
-    }
-    const minimumBid = parseFloatField("minimum_bid_amount", "Minimum bid floor", 0);
-    if (minimumBid === null) {
-      return null;
-    }
-    const roundingIncrement = parseFloatField("rounding_increment", "Rounding increment", 0);
-    if (roundingIncrement === null) {
-      return null;
-    }
-
-    const toolsRentalType = profileForm.tools_rental_type === "%" ? "%" : "$";
-    const roundingMode: BiddingProfileRoundingMode =
-      profileForm.rounding_mode === "nearest" || profileForm.rounding_mode === "up" || profileForm.rounding_mode === "down"
-        ? profileForm.rounding_mode
-        : "none";
-    if (roundingMode !== "none" && roundingIncrement <= 0) {
-      setError("Rounding increment must be greater than 0 when rounding mode is enabled.");
-      return null;
-    }
-    const normalizedCustomAdjustments: BiddingCustomPricingAdjustment[] = [];
-    const seenNames = new Set<string>();
-    for (const row of customAdjustmentsForm) {
-      const name = row.name.trim();
-      const valueRaw = row.value.trim();
-      if (!name && !valueRaw) {
-        continue;
-      }
-      if (!name) {
-        setError("Each custom pricing box needs a name.");
-        return null;
-      }
-      const parsedValue = Number(valueRaw);
-      if (!Number.isFinite(parsedValue) || parsedValue < 0) {
-        setError(`Custom pricing "${name}" must have a valid non-negative value.`);
-        return null;
-      }
-      const lowered = name.toLowerCase();
-      if (seenNames.has(lowered)) {
-        setError(`Custom pricing name "${name}" is duplicated.`);
-        return null;
-      }
-      seenNames.add(lowered);
-      normalizedCustomAdjustments.push({
-        adjustment_id: row.adjustment_id || createCustomAdjustmentId(),
-        name,
-        mode: row.mode === "%" ? "%" : "$",
-        value: parsedValue,
-      });
-    }
-
-    return {
-      labor_markup_pct: laborMarkup,
-      overhead_pct: overhead,
-      profit_pct: profit,
-      commission_amount: commission,
-      tools_rental_amount: toolsRental,
-      tools_rental_type: toolsRentalType,
-      shipping_amount: shipping,
-      use_tax_pct: useTax,
-      minimum_bid_amount: minimumBid,
-      rounding_increment: roundingIncrement,
-      rounding_mode: roundingMode,
-      custom_pricing_adjustments: normalizedCustomAdjustments,
-    };
+    setWorkers((prev) => {
+      const hasOnlyEmptyRow =
+        prev.length === 1 &&
+        !prev[0].name.trim() &&
+        !prev[0].wage_per_hour.trim() &&
+        !prev[0].hours.trim();
+      return hasOnlyEmptyRow ? [row] : [...prev, row];
+    });
+    setAppliedSavedWorkerId(workerId);
+    setWorkerActionNotice(`Saved worker "${savedWorker.name}" added.`);
   };
 
-  const saveActiveProfileSettings = (settings: BiddingProfileSettings, message?: string) => {
-    const active = getActiveBiddingProfile(profileLibrary);
-    const now = new Date().toISOString();
-    const next = updateProfileLibrary({
+  const getSelectedProfile = (): NamedBiddingProfile => {
+    const normalized = normalizeBiddingProfileLibrary({
       ...profileLibrary,
-      profiles: profileLibrary.profiles.map((profile) =>
-        profile.profile_id === active.profile_id
-          ? { ...profile, settings, updated_at: now }
-          : profile,
-      ),
+      active_profile_id: selectedProfileId,
     });
-    const updatedActive = getActiveBiddingProfile(next);
-    setProfileForm(biddingProfileToFormValues(updatedActive.settings));
-    setCustomAdjustmentsForm(settingsToCustomAdjustmentForms(updatedActive.settings));
-    if (message) {
-      setProfileMessage(message);
+    if (normalized.active_profile_id !== selectedProfileId) {
+      setSelectedProfileId(normalized.active_profile_id);
+      setProfileLibrary(normalized);
+      writeBiddingProfileLibrary(userId, normalized);
     }
-    return updatedActive;
+    return getActiveBiddingProfile(normalized);
   };
 
-  const applyProfileDefaults = () => {
-    saveActiveProfileSettings(DEFAULT_BIDDING_PROFILE_SETTINGS, "Active profile reset to defaults.");
-    setError(null);
-  };
-
-  const saveProfile = () => {
-    const normalized = parseProfileForm();
-    if (!normalized) {
-      return;
-    }
-    saveActiveProfileSettings(normalized, "Active profile saved.");
-    setError(null);
-  };
-
-  const renameActiveProfile = () => {
-    const active = getActiveBiddingProfile(profileLibrary);
-    const nextName = normalizeProfileName(profileNameInput);
-    const nameTaken = profileLibrary.profiles.some(
-      (profile) =>
-        profile.profile_id !== active.profile_id &&
-        profile.name.trim().toLowerCase() === nextName.toLowerCase(),
-    );
-    if (nameTaken) {
-      setError(`A profile named "${nextName}" already exists.`);
-      return;
-    }
-
-    const now = new Date().toISOString();
-    updateProfileLibrary({
-      ...profileLibrary,
-      profiles: profileLibrary.profiles.map((profile) =>
-        profile.profile_id === active.profile_id
-          ? { ...profile, name: nextName, updated_at: now }
-          : profile,
-      ),
-    });
-    setProfileNameInput(nextName);
-    setError(null);
-    setProfileMessage(`Renamed active profile to ${nextName}.`);
-  };
-
-  const createProfileFromCurrent = () => {
-    const normalized = parseProfileForm();
-    if (!normalized) {
-      return;
-    }
-    const nextName = normalizeProfileName(profileNameInput);
-    const nameTaken = profileLibrary.profiles.some(
-      (profile) => profile.name.trim().toLowerCase() === nextName.toLowerCase(),
-    );
-    if (nameTaken) {
-      setError(`A profile named "${nextName}" already exists.`);
-      return;
-    }
-
-    const created = buildNamedProfile(nextName, normalized);
-    const nextLibrary = updateProfileLibrary({
-      active_profile_id: created.profile_id,
-      profiles: [...profileLibrary.profiles, created],
-    });
-    const active = getActiveBiddingProfile(nextLibrary);
-    setProfileForm(biddingProfileToFormValues(active.settings));
-    setProfileNameInput(active.name);
-    setCustomAdjustmentsForm(settingsToCustomAdjustmentForms(active.settings));
-    setError(null);
-    setProfileMessage(`Created profile ${active.name}.`);
-  };
-
-  const deleteActiveProfile = () => {
-    if (profileLibrary.profiles.length <= 1) {
-      setError("At least one bidding profile is required.");
-      return;
-    }
-
-    const active = getActiveBiddingProfile(profileLibrary);
-    if (!window.confirm(`Delete profile "${active.name}"?`)) {
-      return;
-    }
-
-    const remaining = profileLibrary.profiles.filter((profile) => profile.profile_id !== active.profile_id);
-    const nextLibrary = updateProfileLibrary({
-      active_profile_id: remaining[0].profile_id,
-      profiles: remaining,
-    });
-    const nextActive = getActiveBiddingProfile(nextLibrary);
-    setProfileForm(biddingProfileToFormValues(nextActive.settings));
-    setProfileNameInput(nextActive.name);
-    setCustomAdjustmentsForm(settingsToCustomAdjustmentForms(nextActive.settings));
-    setError(null);
-    setProfileMessage(`Deleted profile ${active.name}. Active profile is now ${nextActive.name}.`);
+  const getActiveProfileSettings = (): BiddingProfileSettings => {
+    return getSelectedProfile().settings;
   };
 
   const applyParsedPdfFields = (payload: Awaited<ReturnType<typeof parsePdf>>) => {
@@ -2251,6 +2587,12 @@ function BiddingView({ userId }: { userId: number }) {
     event.target.value = "";
   };
 
+  const clearPricingFileSelection = () => {
+    setPricingFile(null);
+    setPricingPath("");
+    setError(null);
+  };
+
   const handlePdfFileSelected = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) {
@@ -2319,15 +2661,11 @@ function BiddingView({ userId }: { userId: number }) {
       setError("Choose a pricing Excel file before previewing.");
       return;
     }
-    const profilePayload = parseProfileForm();
-    if (!profilePayload) {
-      return;
-    }
+    const profilePayload = getActiveProfileSettings();
 
     setIsBusy(true);
     setError(null);
     setExportNotice(null);
-    saveActiveProfileSettings(profilePayload);
 
     try {
       const sharedPayload = buildSharedBidPayload(profilePayload);
@@ -2346,6 +2684,40 @@ function BiddingView({ userId }: { userId: number }) {
     }
   };
 
+  const handleConfirmBidToJobs = async () => {
+    const trimmedPricingPath = pricingPath.trim();
+    if (!pricingFile && !trimmedPricingPath) {
+      setError("Choose a pricing Excel file before confirming.");
+      return;
+    }
+
+    const profilePayload = getActiveProfileSettings();
+    setIsConfirmingBid(true);
+    setError(null);
+    setExportNotice(null);
+
+    try {
+      const sharedPayload = buildSharedBidPayload(profilePayload);
+      const payload = pricingFile
+        ? await confirmBidUpload(pricingFile, sharedPayload)
+        : await confirmBid({
+            pricing_file_path: trimmedPricingPath,
+            ...sharedPayload,
+          });
+      showExportNotice(
+        "success",
+        `Bid confirmed. Job #${payload.job_id} created in Awaiting Approval.`,
+      );
+      onOpenJobs();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to confirm bid.";
+      setError(message);
+      showExportNotice("error", message);
+    } finally {
+      setIsConfirmingBid(false);
+    }
+  };
+
   const handleExportExcel = async () => {
     const trimmedPricingPath = pricingPath.trim();
     if (!pricingFile && !trimmedPricingPath) {
@@ -2353,15 +2725,11 @@ function BiddingView({ userId }: { userId: number }) {
       return;
     }
 
-    const profilePayload = parseProfileForm();
-    if (!profilePayload) {
-      return;
-    }
+    const profilePayload = getActiveProfileSettings();
 
     setIsExportingExcel(true);
     setError(null);
     setExportNotice(null);
-    saveActiveProfileSettings(profilePayload);
 
     try {
       const sharedPayload = buildSharedBidPayload(profilePayload);
@@ -2372,9 +2740,22 @@ function BiddingView({ userId }: { userId: number }) {
             pricing_file_path: trimmedPricingPath,
             ...sharedPayload,
           });
-      downloadBlob(filename, blob);
-      showExportNotice("success", `Excel exported: ${filename}`);
+      const saveResult = await saveBlobWithDialog(filename, blob, {
+        description: "Excel Workbook",
+        mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        extensions: [".xlsx"],
+      });
+      showExportNotice(
+        "success",
+        saveResult === "picker"
+          ? `Excel saved: ${filename}`
+          : `Excel exported to default download location: ${filename}`,
+      );
     } catch (err) {
+      if (isAbortError(err)) {
+        showExportNotice("error", "Excel save canceled.");
+        return;
+      }
       setError(err instanceof Error ? err.message : "Excel export failed");
       showExportNotice("error", err instanceof Error ? err.message : "Excel export failed");
     } finally {
@@ -2389,15 +2770,11 @@ function BiddingView({ userId }: { userId: number }) {
       return;
     }
 
-    const profilePayload = parseProfileForm();
-    if (!profilePayload) {
-      return;
-    }
+    const profilePayload = getActiveProfileSettings();
 
     setIsExportingPdf(true);
     setError(null);
     setExportNotice(null);
-    saveActiveProfileSettings(profilePayload);
 
     try {
       const sharedPayload = buildSharedBidPayload(profilePayload);
@@ -2408,15 +2785,32 @@ function BiddingView({ userId }: { userId: number }) {
             pricing_file_path: trimmedPricingPath,
             ...sharedPayload,
           });
-      downloadBlob(filename, blob);
-      showExportNotice("success", `PDF exported: ${filename}`);
+      const saveResult = await saveBlobWithDialog(filename, blob, {
+        description: "PDF Document",
+        mimeType: "application/pdf",
+        extensions: [".pdf"],
+      });
+      showExportNotice(
+        "success",
+        saveResult === "picker"
+          ? `PDF saved: ${filename}`
+          : `PDF exported to default download location: ${filename}`,
+      );
     } catch (err) {
+      if (isAbortError(err)) {
+        showExportNotice("error", "PDF save canceled.");
+        return;
+      }
       setError(err instanceof Error ? err.message : "PDF export failed");
       showExportNotice("error", err instanceof Error ? err.message : "PDF export failed");
     } finally {
       setIsExportingPdf(false);
     }
   };
+
+  const selectedBiddingProfile =
+    profileLibrary.profiles.find((profile) => profile.profile_id === selectedProfileId) ??
+    getActiveBiddingProfile(profileLibrary);
 
   return (
     <section className="panel-stack">
@@ -2437,9 +2831,15 @@ function BiddingView({ userId }: { userId: number }) {
                 <button
                   className="nav-item compact"
                   type="button"
-                  onClick={() => pricingPickerRef.current?.click()}
+                  onClick={() => {
+                    if (pricingFile || pricingPath.trim()) {
+                      clearPricingFileSelection();
+                      return;
+                    }
+                    pricingPickerRef.current?.click();
+                  }}
                 >
-                  Choose Excel
+                  {pricingFile || pricingPath.trim() ? "Remove File" : "Choose Excel"}
                 </button>
               </div>
             </div>
@@ -2549,34 +2949,13 @@ function BiddingView({ userId }: { userId: number }) {
             Metal roof
           </label>
 
-          <div className="full-width bidding-profile-panel">
-            <div className="bidding-profile-header">
-              <h3>Bidding Profile</h3>
-              <div className="bidding-profile-actions">
-                <button className="nav-item compact" type="button" onClick={saveProfile}>
-                  Save Active
-                </button>
-                <button className="nav-item compact" type="button" onClick={applyProfileDefaults}>
-                  Reset Active
-                </button>
-                <button className="nav-item compact" type="button" onClick={createProfileFromCurrent}>
-                  Save As New
-                </button>
-                <button className="nav-item compact" type="button" onClick={deleteActiveProfile}>
-                  Delete Active
-                </button>
-              </div>
-            </div>
-            <p className="bidding-profile-note">
-              Company-level pricing settings used for this preview. Profiles are saved per user.
-            </p>
-            {profileMessage ? <p className="bidding-profile-feedback">{profileMessage}</p> : null}
-            <div className="bidding-profile-meta">
+          <div className="full-width bidding-runtime-profile">
+            <div className="worker-preset-row">
               <label>
-                Active Profile
+                Bidding Profile
                 <select
-                  value={profileLibrary.active_profile_id}
-                  onChange={(e) => switchActiveProfile(e.target.value)}
+                  value={selectedBiddingProfile.profile_id}
+                  onChange={(e) => handleBiddingProfileSelect(e.target.value)}
                 >
                   {profileLibrary.profiles.map((profile) => (
                     <option key={profile.profile_id} value={profile.profile_id}>
@@ -2585,195 +2964,79 @@ function BiddingView({ userId }: { userId: number }) {
                   ))}
                 </select>
               </label>
-              <label>
-                Profile Name
-                <input
-                  value={profileNameInput}
-                  onChange={(e) => {
-                    setProfileNameInput(e.target.value);
-                    setProfileMessage(null);
-                  }}
-                  placeholder="Commercial"
-                />
-              </label>
-              <div className="bidding-profile-name-actions">
-                <button className="nav-item compact" type="button" onClick={renameActiveProfile}>
-                  Rename Active
-                </button>
-              </div>
+              <button className="nav-item compact" type="button" onClick={refreshBiddingProfileLibrary}>
+                Refresh Profiles
+              </button>
             </div>
-            <div className="bidding-profile-grid">
-              <label>
-                Labor Markup (%)
-                <input
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  value={profileForm.labor_markup_pct}
-                  onChange={(e) => setProfileField("labor_markup_pct", e.target.value)}
-                />
-              </label>
-              <label>
-                Overhead (%)
-                <input
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  value={profileForm.overhead_pct}
-                  onChange={(e) => setProfileField("overhead_pct", e.target.value)}
-                />
-              </label>
-              <label>
-                Profit (%)
-                <input
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  value={profileForm.profit_pct}
-                  onChange={(e) => setProfileField("profit_pct", e.target.value)}
-                />
-              </label>
-              <label>
-                Use Tax (%)
-                <input
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  value={profileForm.use_tax_pct}
-                  onChange={(e) => setProfileField("use_tax_pct", e.target.value)}
-                />
-              </label>
-              <label>
-                Shipping ($)
-                <input
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  value={profileForm.shipping_amount}
-                  onChange={(e) => setProfileField("shipping_amount", e.target.value)}
-                />
-              </label>
-              <label>
-                Commission ($)
-                <input
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  value={profileForm.commission_amount}
-                  onChange={(e) => setProfileField("commission_amount", e.target.value)}
-                />
-              </label>
-              <label>
-                Tools/Rental Type
-                <select
-                  value={profileForm.tools_rental_type}
-                  onChange={(e) => setProfileField("tools_rental_type", e.target.value)}
-                >
-                  <option value="$">Flat Dollar ($)</option>
-                  <option value="%">Percent of Subtotal (%)</option>
-                </select>
-              </label>
-              <label>
-                Tools/Rental Value
-                <input
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  value={profileForm.tools_rental_amount}
-                  onChange={(e) => setProfileField("tools_rental_amount", e.target.value)}
-                />
-              </label>
-              <label>
-                Minimum Bid Floor ($)
-                <input
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  value={profileForm.minimum_bid_amount}
-                  onChange={(e) => setProfileField("minimum_bid_amount", e.target.value)}
-                />
-              </label>
-              <label>
-                Rounding Mode
-                <select
-                  value={profileForm.rounding_mode}
-                  onChange={(e) => setProfileField("rounding_mode", e.target.value)}
-                >
-                  <option value="none">None</option>
-                  <option value="nearest">Nearest Increment</option>
-                  <option value="up">Always Up</option>
-                  <option value="down">Always Down</option>
-                </select>
-              </label>
-              <label>
-                Rounding Increment ($)
-                <input
-                  type="number"
-                  step="1"
-                  min="0"
-                  value={profileForm.rounding_increment}
-                  onChange={(e) => setProfileField("rounding_increment", e.target.value)}
-                />
-              </label>
-            </div>
-            <div className="custom-pricing-panel">
-              <div className="custom-pricing-header">
-                <h4>Custom Pricing Boxes</h4>
-                <button className="nav-item compact" type="button" onClick={addCustomAdjustmentRow}>
-                  Add Pricing Box
-                </button>
-              </div>
-              <p className="custom-pricing-note">
-                Add your own line items. `%` uses subtotal as the base.
-              </p>
-              {customAdjustmentsForm.length === 0 ? (
-                <p className="custom-pricing-empty">No custom pricing boxes yet.</p>
-              ) : (
-                <div className="custom-pricing-list">
-                  {customAdjustmentsForm.map((item) => (
-                    <div key={item.adjustment_id} className="custom-pricing-row">
-                      <input
-                        placeholder="Line item name"
-                        value={item.name}
-                        onChange={(e) =>
-                          updateCustomAdjustment(item.adjustment_id, { name: e.target.value })
-                        }
-                      />
-                      <select
-                        value={item.mode}
-                        onChange={(e) =>
-                          updateCustomAdjustment(item.adjustment_id, { mode: e.target.value === "%" ? "%" : "$" })
-                        }
-                      >
-                        <option value="$">$</option>
-                        <option value="%">%</option>
-                      </select>
-                      <input
-                        type="number"
-                        step="0.01"
-                        min="0"
-                        placeholder="Value"
-                        value={item.value}
-                        onChange={(e) =>
-                          updateCustomAdjustment(item.adjustment_id, { value: e.target.value })
-                        }
-                      />
-                      <button
-                        className="nav-item compact"
-                        type="button"
-                        onClick={() => removeCustomAdjustment(item.adjustment_id)}
-                      >
-                        Remove
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
+            <p>
+              Active bidding profile: <strong>{selectedBiddingProfile.name}</strong>
+            </p>
+            <p>Manage bidding profiles in Settings.</p>
           </div>
 
           <div className="full-width">
             <h3>Workers</h3>
+            <div className="worker-preset-row">
+              <label>
+                Crew Preset
+                <select
+                  value={selectedWorkerPresetId}
+                  onChange={(e) => handleWorkerPresetSelect(e.target.value)}
+                >
+                  <option value="">Select crew preset</option>
+                  {workerPresetLibrary.presets.map((preset) => (
+                    <option key={preset.preset_id} value={preset.preset_id}>
+                      {preset.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button className="nav-item compact" type="button" onClick={refreshWorkerPresetLibrary}>
+                Refresh Presets
+              </button>
+              <button
+                className={`nav-item compact worker-status-chip ${
+                  selectedWorkerPresetId && appliedWorkerPresetId === selectedWorkerPresetId ? "applied" : "pending"
+                }`}
+                type="button"
+                disabled
+              >
+                {selectedWorkerPresetId && appliedWorkerPresetId === selectedWorkerPresetId
+                  ? "Crew Preset Applied"
+                  : "Select Crew Preset"}
+              </button>
+            </div>
+            <div className="worker-preset-row">
+              <label>
+                Saved Worker
+                <select
+                  value={selectedSavedWorkerId}
+                  onChange={(e) => handleSavedWorkerSelect(e.target.value)}
+                >
+                  <option value="">Select saved worker</option>
+                  {savedWorkerLibrary.workers.map((worker) => (
+                    <option key={worker.worker_id} value={worker.worker_id}>
+                      {worker.name} ({money.format(worker.wage_per_hour)}/hr, {worker.hours}h)
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button className="nav-item compact" type="button" onClick={refreshSavedWorkerLibrary}>
+                Refresh Workers
+              </button>
+              <button
+                className={`nav-item compact worker-status-chip ${
+                  selectedSavedWorkerId && appliedSavedWorkerId === selectedSavedWorkerId ? "applied" : "pending"
+                }`}
+                type="button"
+                disabled
+              >
+                {selectedSavedWorkerId && appliedSavedWorkerId === selectedSavedWorkerId
+                  ? "Worker Added"
+                  : "Select Saved Worker"}
+              </button>
+            </div>
+            {workerActionNotice ? <p className="worker-action-note">{workerActionNotice}</p> : null}
             <div className="worker-grid">
               {workers.map((worker, index) => (
                 <div key={index} className="worker-row">
@@ -2795,12 +3058,16 @@ function BiddingView({ userId }: { userId: number }) {
                 </div>
               ))}
             </div>
-            <button
-              className="nav-item compact"
-              onClick={() => setWorkers((prev) => [...prev, { name: "", wage_per_hour: "", hours: "" }])}
-              type="button"
-            >
-              Add Worker
+              <button
+                className="nav-item compact"
+                onClick={() => {
+                  setWorkers((prev) => [...prev, { ...EMPTY_WORKER_INPUT }]);
+                  setAppliedWorkerPresetId("");
+                  setWorkerActionNotice(null);
+                }}
+                type="button"
+              >
+                Add Worker
             </button>
           </div>
 
@@ -2903,8 +3170,16 @@ function BiddingView({ userId }: { userId: number }) {
             <button
               className="nav-item"
               type="button"
+              onClick={() => void handleConfirmBidToJobs()}
+              disabled={isBusy || isConfirmingBid || isExportingExcel || isExportingPdf}
+            >
+              {isConfirmingBid ? "Confirming..." : "Confirm Bid to Jobs"}
+            </button>
+            <button
+              className="nav-item"
+              type="button"
               onClick={() => void handleExportExcel()}
-              disabled={isBusy || isExportingExcel || isExportingPdf}
+              disabled={isBusy || isConfirmingBid || isExportingExcel || isExportingPdf}
             >
               {isExportingExcel ? "Exporting Excel..." : "Export Excel"}
             </button>
@@ -2912,7 +3187,7 @@ function BiddingView({ userId }: { userId: number }) {
               className="nav-item"
               type="button"
               onClick={() => void handleExportPdf()}
-              disabled={isBusy || isExportingExcel || isExportingPdf}
+              disabled={isBusy || isConfirmingBid || isExportingExcel || isExportingPdf}
             >
               {isExportingPdf ? "Exporting PDF..." : "Export PDF"}
             </button>
@@ -2923,7 +3198,13 @@ function BiddingView({ userId }: { userId: number }) {
   );
 }
 
-function JobsView({ userId, username }: { userId: number; username: string }) {
+function JobsView({
+  userId,
+  onOpenJobFiles,
+}: {
+  userId: number;
+  onOpenJobFiles: (jobId: number) => void;
+}) {
   const [board, setBoard] = useState<JobsBoardResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -2944,14 +3225,6 @@ function JobsView({ userId, username }: { userId: number; username: string }) {
     >
   >({});
   const [alertSettings, setAlertSettings] = useState<WorkflowAlertSettings>(() => readWorkflowAlertSettings(userId));
-  const [alertForm, setAlertForm] = useState<WorkflowAlertSettingsForm>(() =>
-    alertSettingsToFormValues(readWorkflowAlertSettings(userId)),
-  );
-  const [isAlertsDialogOpen, setIsAlertsDialogOpen] = useState(false);
-  const [isAlertsUnlocked, setIsAlertsUnlocked] = useState(false);
-  const [alertsPassword, setAlertsPassword] = useState("");
-  const [alertsBusy, setAlertsBusy] = useState(false);
-  const [alertsError, setAlertsError] = useState<string | null>(null);
 
   const getWorkflowInput = (jobId: number) =>
     workflowInputs[jobId] ?? {
@@ -2996,7 +3269,6 @@ function JobsView({ userId, username }: { userId: number; username: string }) {
   useEffect(() => {
     const next = readWorkflowAlertSettings(userId);
     setAlertSettings(next);
-    setAlertForm(alertSettingsToFormValues(next));
   }, [userId]);
 
   const isIsoDate = (value: string): boolean => /^\d{4}-\d{2}-\d{2}$/.test(value.trim());
@@ -3111,84 +3383,6 @@ function JobsView({ userId, username }: { userId: number; username: string }) {
     }
   };
 
-  const openAlertsDialog = () => {
-    setAlertsError(null);
-    setAlertsPassword("");
-    setIsAlertsUnlocked(false);
-    setAlertForm(alertSettingsToFormValues(alertSettings));
-    setIsAlertsDialogOpen(true);
-  };
-
-  const closeAlertsDialog = () => {
-    setIsAlertsDialogOpen(false);
-    setIsAlertsUnlocked(false);
-    setAlertsPassword("");
-    setAlertsError(null);
-    setAlertsBusy(false);
-  };
-
-  const setAlertFieldValue = (key: WorkflowAlertSettingsField, value: string) => {
-    setAlertForm((prev) => ({
-      ...prev,
-      [key]: value,
-    }));
-  };
-
-  const unlockAlertsSettings = async (event: FormEvent) => {
-    event.preventDefault();
-
-    if (!alertsPassword.trim()) {
-      setAlertsError("Enter your password to access Alerts settings.");
-      return;
-    }
-
-    try {
-      setAlertsBusy(true);
-      setAlertsError(null);
-      const verifyResult = await verifyPassword({
-        password: alertsPassword,
-      });
-      if (!verifyResult.valid) {
-        setAlertsError("Password confirmation failed for this account.");
-        return;
-      }
-      setIsAlertsUnlocked(true);
-      setAlertsPassword("");
-      setAlertForm(alertSettingsToFormValues(alertSettings));
-    } catch (err) {
-      setAlertsError(err instanceof Error ? err.message : "Password confirmation failed.");
-    } finally {
-      setAlertsBusy(false);
-    }
-  };
-
-  const saveAlertSettings = (event: FormEvent) => {
-    event.preventDefault();
-
-    const nextSettings = { ...alertSettings };
-    for (const field of workflowAlertSettingFields) {
-      const rawValue = (alertForm[field.key] ?? "").trim();
-      if (!rawValue) {
-        setAlertsError(`${field.label} is required.`);
-        return;
-      }
-      const parsed = Number(rawValue);
-      if (!Number.isFinite(parsed) || !Number.isInteger(parsed)) {
-        setAlertsError(`${field.label} must be a whole number.`);
-        return;
-      }
-      if (parsed < field.min || parsed > field.max) {
-        setAlertsError(`${field.label} must be between ${field.min} and ${field.max} days.`);
-        return;
-      }
-      nextSettings[field.key] = parsed;
-    }
-
-    setAlertSettings(nextSettings);
-    writeWorkflowAlertSettings(userId, nextSettings);
-    closeAlertsDialog();
-  };
-
   const handleApproveAndSchedule = async (job: DashboardJobItem) => {
     const input = getWorkflowInput(job.job_id);
     const scheduledDate = input.scheduled_date.trim();
@@ -3254,14 +3448,6 @@ function JobsView({ userId, username }: { userId: number; username: string }) {
         <div className="jobs-header-actions">
           <button
             className="nav-item"
-            onClick={openAlertsDialog}
-            type="button"
-            disabled={updatingJobId !== null}
-          >
-            ⚙ Alerts
-          </button>
-          <button
-            className="nav-item"
             onClick={() => void loadBoard(true)}
             type="button"
             disabled={refreshing || updatingJobId !== null}
@@ -3320,6 +3506,15 @@ function JobsView({ userId, username }: { userId: number; username: string }) {
                             Invoice: {job.invoice_number} ({formatDate(job.invoice_date)})
                           </p>
                         ) : null}
+                        <div className="jobs-card-actions">
+                          <button
+                            className="nav-item compact"
+                            type="button"
+                            onClick={() => onOpenJobFiles(job.job_id)}
+                          >
+                            View PDF / Excel
+                          </button>
+                        </div>
 
                         {column.actionType === "approve" && column.actionLabel ? (
                           <div className="jobs-approve-row">
@@ -3435,74 +3630,1660 @@ function JobsView({ userId, username }: { userId: number; username: string }) {
           );
         })}
       </section>
+    </section>
+  );
+}
 
-      {isAlertsDialogOpen ? (
-        <div className="alerts-modal-backdrop" role="presentation">
-          <article className="panel alerts-modal" role="dialog" aria-modal="true" aria-labelledby="alerts-modal-title">
-            <header className="alerts-modal-header">
-              <h3 id="alerts-modal-title">Workflow Alerts</h3>
-              <button
-                className="nav-item compact"
-                type="button"
-                onClick={closeAlertsDialog}
-                disabled={alertsBusy}
-              >
-                Close
-              </button>
-            </header>
-            <p className="alerts-modal-intro">
-              Configure warning and overdue timelines for workflow steps. Password confirmation is required.
-            </p>
-            {alertsError ? <p className="alerts-modal-error">{alertsError}</p> : null}
+function JobFilesView({ userId, initialJobId }: { userId: number; initialJobId: number | null }) {
+  const [indexData, setIndexData] = useState<JobAssetsIndexResponse | null>(null);
+  const [selectedJobId, setSelectedJobId] = useState<number | null>(initialJobId);
+  const [detail, setDetail] = useState<JobAssetDetailResponse | null>(null);
+  const [loadingIndex, setLoadingIndex] = useState(true);
+  const [refreshingIndex, setRefreshingIndex] = useState(false);
+  const [loadingDetail, setLoadingDetail] = useState(false);
+  const [downloadingKind, setDownloadingKind] = useState<"excel" | "pdf" | null>(null);
+  const [downloadingHistoryId, setDownloadingHistoryId] = useState<number | null>(null);
+  const [historyTypeFilter, setHistoryTypeFilter] = useState<"all" | "excel" | "pdf">("all");
+  const [historyDateFrom, setHistoryDateFrom] = useState("");
+  const [historyDateTo, setHistoryDateTo] = useState("");
+  const [cleanupDaysInput, setCleanupDaysInput] = useState("90");
+  const [cleanupBusy, setCleanupBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [detailError, setDetailError] = useState<string | null>(null);
+  const [detailMessage, setDetailMessage] = useState<string | null>(null);
 
-            {!isAlertsUnlocked ? (
-              <form className="alerts-lock-form" onSubmit={unlockAlertsSettings}>
-                <label>
-                  Account Password
-                  <input
-                    type="password"
-                    value={alertsPassword}
-                    onChange={(e) => setAlertsPassword(e.target.value)}
-                    autoComplete="current-password"
-                    required
-                    disabled={alertsBusy}
-                  />
-                </label>
-                <button className="nav-item" type="submit" disabled={alertsBusy}>
-                  {alertsBusy ? "Checking..." : "Unlock Alerts Settings"}
+  const loadIndex = async (refreshOnly: boolean) => {
+    try {
+      if (refreshOnly) {
+        setRefreshingIndex(true);
+      } else {
+        setLoadingIndex(true);
+      }
+      setError(null);
+      const payload = await getJobAssetsIndex();
+      setIndexData(payload);
+      setSelectedJobId((prev) => {
+        const hasJob = (jobId: number | null) =>
+          jobId !== null && payload.jobs.some((job) => job.job_id === jobId);
+        if (hasJob(initialJobId)) {
+          return initialJobId;
+        }
+        if (hasJob(prev)) {
+          return prev;
+        }
+        return payload.jobs[0]?.job_id ?? null;
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load job files.");
+      setIndexData(null);
+      setSelectedJobId(null);
+    } finally {
+      if (refreshOnly) {
+        setRefreshingIndex(false);
+      } else {
+        setLoadingIndex(false);
+      }
+    }
+  };
+
+  useEffect(() => {
+    void loadIndex(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId]);
+
+  useEffect(() => {
+    if (!initialJobId || !indexData) {
+      return;
+    }
+    if (indexData.jobs.some((job) => job.job_id === initialJobId)) {
+      setSelectedJobId(initialJobId);
+    }
+  }, [initialJobId, indexData]);
+
+  useEffect(() => {
+    if (!selectedJobId) {
+      setDetail(null);
+      setDetailError(null);
+      setDetailMessage(null);
+      return;
+    }
+    setDetailMessage(null);
+    void loadSelectedJobDetail(selectedJobId);
+  }, [selectedJobId]);
+
+  const loadSelectedJobDetail = async (jobId: number) => {
+    try {
+      setLoadingDetail(true);
+      setDetailError(null);
+      const payload = await getJobAssetDetail(jobId);
+      setDetail(payload);
+    } catch (err) {
+      setDetail(null);
+      setDetailError(err instanceof Error ? err.message : "Failed to load job details.");
+    } finally {
+      setLoadingDetail(false);
+    }
+  };
+
+  const handleDownload = async (kind: "excel" | "pdf") => {
+    if (!selectedJobId) {
+      return;
+    }
+    try {
+      setDetailError(null);
+      setDetailMessage(null);
+      setDownloadingKind(kind);
+      const blob = kind === "excel" ? await downloadJobExcel(selectedJobId) : await downloadJobPdf(selectedJobId);
+      const base = sanitizeFileName(
+        `${detail?.job.project_name || `job_${selectedJobId}`}_${selectedJobId}`,
+      ).replace(/_+/g, "_");
+      const extension = kind === "excel" ? "xlsx" : "pdf";
+      const suffix = kind === "excel" ? "bid" : "submittal";
+      downloadBlob(`${base}_${suffix}.${extension}`, blob);
+      await loadSelectedJobDetail(selectedJobId);
+      setDetailMessage(`Saved new ${kind.toUpperCase()} export version.`);
+    } catch (err) {
+      setDetailError(err instanceof Error ? err.message : "Download failed.");
+    } finally {
+      setDownloadingKind(null);
+    }
+  };
+
+  const handleDownloadHistory = async (exportId: number, fileName: string) => {
+    if (!selectedJobId) {
+      return;
+    }
+    try {
+      setDetailError(null);
+      setDetailMessage(null);
+      setDownloadingHistoryId(exportId);
+      const blob = await downloadJobHistoricalExport(selectedJobId, exportId);
+      const safeName = sanitizeFileName(fileName).replace(/_+/g, "_") || `job_${selectedJobId}_export`;
+      downloadBlob(safeName, blob);
+    } catch (err) {
+      setDetailError(err instanceof Error ? err.message : "Historical export download failed.");
+    } finally {
+      setDownloadingHistoryId(null);
+    }
+  };
+
+  const handleCleanupOldExports = async () => {
+    if (!selectedJobId) {
+      return;
+    }
+    const days = Number.parseInt(cleanupDaysInput, 10);
+    if (!Number.isFinite(days) || days < 1) {
+      setDetailError("Enter a valid number of days (1 or more).");
+      return;
+    }
+    if (!window.confirm(`Delete saved exports older than ${days} days for this job?`)) {
+      return;
+    }
+    try {
+      setCleanupBusy(true);
+      setDetailError(null);
+      setDetailMessage(null);
+      const result = await cleanupJobExports(selectedJobId, days);
+      await loadSelectedJobDetail(selectedJobId);
+      const skippedNote = result.skipped_files > 0 ? ` (${result.skipped_files} file(s) skipped).` : ".";
+      setDetailMessage(
+        `Cleanup complete: removed ${result.deleted_records} record(s), deleted ${result.deleted_files} file(s)${skippedNote}`,
+      );
+    } catch (err) {
+      setDetailError(err instanceof Error ? err.message : "Cleanup failed.");
+    } finally {
+      setCleanupBusy(false);
+    }
+  };
+
+  const fromDateMs =
+    historyDateFrom.trim().length > 0
+      ? Date.parse(`${historyDateFrom.trim()}T00:00:00`)
+      : Number.NaN;
+  const toDateMs =
+    historyDateTo.trim().length > 0
+      ? Date.parse(`${historyDateTo.trim()}T23:59:59.999`)
+      : Number.NaN;
+
+  const filteredExportHistory = (detail?.export_history ?? []).filter((item) => {
+    if (historyTypeFilter !== "all" && item.export_type !== historyTypeFilter) {
+      return false;
+    }
+    const createdAtMs = Date.parse(item.created_at);
+    if (!Number.isNaN(fromDateMs)) {
+      if (Number.isNaN(createdAtMs) || createdAtMs < fromDateMs) {
+        return false;
+      }
+    }
+    if (!Number.isNaN(toDateMs)) {
+      if (Number.isNaN(createdAtMs) || createdAtMs > toDateMs) {
+        return false;
+      }
+    }
+    return true;
+  });
+
+  if (loadingIndex) {
+    return <section className="panel"><p>Loading job files...</p></section>;
+  }
+
+  return (
+    <section className="panel-stack">
+      <article className="panel jobs-board-header">
+        <div>
+          <h2>Job Files</h2>
+          <p>Review each job&apos;s PDF, Excel, cost breakdown, and supporting details.</p>
+        </div>
+        <div className="jobs-header-actions">
+          <button className="nav-item" type="button" onClick={() => void loadIndex(true)} disabled={refreshingIndex}>
+            {refreshingIndex ? "Refreshing..." : "Refresh"}
+          </button>
+        </div>
+      </article>
+
+      {error ? <article className="panel error-panel"><p>{error}</p></article> : null}
+
+      <section className="job-files-layout">
+        <article className="panel job-files-list-panel">
+          <h3>Jobs</h3>
+          {indexData && indexData.jobs.length > 0 ? (
+            <div className="job-files-list">
+              {indexData.jobs.map((job: JobAssetListItem) => (
+                <button
+                  key={job.job_id}
+                  className={`job-files-list-item${selectedJobId === job.job_id ? " active" : ""}`}
+                  type="button"
+                  onClick={() => setSelectedJobId(job.job_id)}
+                >
+                  <strong>{job.project_name}</strong>
+                  <span>{job.status_display}</span>
+                  <span>{money.format(job.bid_amount || 0)}</span>
+                  <span>{formatDate(job.scheduled_date)}</span>
                 </button>
-              </form>
-            ) : (
-              <form className="alerts-settings-form" onSubmit={saveAlertSettings}>
-                {workflowAlertSettingFields.map((field) => (
-                  <label key={field.key}>
-                    {field.label}
-                    <input
-                      type="number"
-                      min={field.min}
-                      max={field.max}
-                      step={1}
-                      value={alertForm[field.key]}
-                      onChange={(e) => setAlertFieldValue(field.key, e.target.value)}
-                    />
-                    <small>{field.description}</small>
-                  </label>
-                ))}
-                <div className="alerts-modal-actions">
+              ))}
+            </div>
+          ) : (
+            <p>No jobs found.</p>
+          )}
+        </article>
+
+        <article className="panel job-files-detail-panel">
+          {loadingDetail ? <p>Loading selected job details...</p> : null}
+          {detailError ? <p className="alerts-modal-error">{detailError}</p> : null}
+          {detailMessage ? <p className="bidding-profile-feedback">{detailMessage}</p> : null}
+          {!loadingDetail && !detail && !detailError ? (
+            <p>Select a job to view file access and pricing details.</p>
+          ) : null}
+          {detail ? (
+            <div className="job-files-detail-content">
+              <div className="settings-section-header">
+                <h3>{detail.job.project_name}</h3>
+                <div className="bidding-profile-actions">
                   <button
                     className="nav-item compact"
                     type="button"
-                    onClick={() => setAlertForm(alertSettingsToFormValues(alertSettings))}
+                    onClick={() => void handleDownload("excel")}
+                    disabled={downloadingKind !== null || !detail.can_export_excel}
                   >
-                    Reset
+                    {downloadingKind === "excel" ? "Preparing..." : "Export New Excel"}
                   </button>
-                  <button className="nav-item" type="submit">Save Alerts</button>
+                  <button
+                    className="nav-item compact"
+                    type="button"
+                    onClick={() => void handleDownload("pdf")}
+                    disabled={downloadingKind !== null || !detail.can_export_pdf}
+                  >
+                    {downloadingKind === "pdf" ? "Preparing..." : "Export New PDF"}
+                  </button>
                 </div>
-              </form>
-            )}
-          </article>
+              </div>
+
+              <div className="preview-grid">
+                <div>Status: {detail.job.status_display}</div>
+                <div>Bid Amount: {money.format(detail.job.bid_amount || 0)}</div>
+                <div>Scheduled: {formatDate(detail.job.scheduled_date)}</div>
+                <div>Start: {formatDate(detail.job.start_date)}</div>
+                <div>Completion: {formatDate(detail.job.completion_date)}</div>
+                <div>Invoice: {detail.job.invoice_number || "Not invoiced"}</div>
+              </div>
+
+              {detail.job.assigned_crew.length > 0 ? (
+                <p className="calendar-job-crew">Crew: {detail.job.assigned_crew.join(", ")}</p>
+              ) : (
+                <p className="calendar-job-crew">Crew: Not assigned</p>
+              )}
+
+              <div className="job-files-breakdown-grid">
+                <article className="job-files-card">
+                  <h4>Cost Summary</h4>
+                  <ul className="calc-line-list">
+                    <li><span>Material</span><strong>{money.format(detail.cost_summary.material_total)}</strong></li>
+                    <li><span>Labor</span><strong>{money.format(detail.cost_summary.labor_total)}</strong></li>
+                    <li><span>Subtotal</span><strong>{money.format(detail.cost_summary.subtotal)}</strong></li>
+                    <li><span>With Markup</span><strong>{money.format(detail.cost_summary.total_with_markup)}</strong></li>
+                    <li><span>Final Bid</span><strong>{money.format(detail.cost_summary.final_bid_amount)}</strong></li>
+                  </ul>
+                </article>
+
+                <article className="job-files-card">
+                  <h4>Pricing Inputs</h4>
+                  <ul className="calc-line-list">
+                    <li><span>Labor Markup</span><strong>{detail.cost_summary.labor_markup_pct.toFixed(2)}%</strong></li>
+                    <li><span>Overhead</span><strong>{detail.cost_summary.overhead_pct.toFixed(2)}%</strong></li>
+                    <li><span>Profit</span><strong>{detail.cost_summary.profit_pct.toFixed(2)}%</strong></li>
+                    <li><span>Shipping</span><strong>{money.format(detail.cost_summary.shipping_amount)}</strong></li>
+                    <li><span>Use Tax</span><strong>{detail.cost_summary.use_tax_pct.toFixed(2)}%</strong></li>
+                  </ul>
+                </article>
+
+                <article className="job-files-card">
+                  <h4>Financial Snapshot</h4>
+                  {detail.financial_summary ? (
+                    <ul className="calc-line-list">
+                      <li><span>Payment Status</span><strong>{detail.financial_summary.payment_status}</strong></li>
+                      <li><span>Amount Paid</span><strong>{money.format(detail.financial_summary.amount_paid || 0)}</strong></li>
+                      <li><span>Total Costs</span><strong>{money.format(detail.financial_summary.total_costs || 0)}</strong></li>
+                      <li><span>Net Profit</span><strong>{money.format(detail.financial_summary.net_profit || 0)}</strong></li>
+                      <li><span>Margin</span><strong>{(detail.financial_summary.profit_margin_pct || 0).toFixed(2)}%</strong></li>
+                    </ul>
+                  ) : (
+                    <p>No financial tracking entered yet.</p>
+                  )}
+                </article>
+              </div>
+
+              <div className="job-files-breakdown-grid">
+                <article className="job-files-card">
+                  <h4>Workers</h4>
+                  {detail.workers.length > 0 ? (
+                    <ul className="job-list">
+                      {detail.workers.map((worker, index) => (
+                        <li key={`${worker.name}-${index}`}>
+                          <div className="job-primary">
+                            <strong>{worker.name}</strong>
+                            <span>{worker.hours}h</span>
+                          </div>
+                          <div className="job-secondary">
+                            <span>{money.format(worker.wage_per_hour)}/hr</span>
+                            <span>{money.format(worker.total_cost)}</span>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p>No worker rows found for this job.</p>
+                  )}
+                </article>
+
+                <article className="job-files-card">
+                  <h4>Sections</h4>
+                  {detail.sections.length > 0 ? (
+                    <ul className="job-list">
+                      {detail.sections.map((section) => (
+                        <li key={section.name}>
+                          <div className="job-primary">
+                            <strong>{section.name}</strong>
+                            <span>{section.items} items</span>
+                          </div>
+                          <div className="job-secondary">
+                            <span>{money.format(section.material_total)}</span>
+                            <span>{money.format(section.section_total)}</span>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p>No bid sections found for this job.</p>
+                  )}
+                </article>
+
+                <article className="job-files-card">
+                  <h4>Documents</h4>
+                  {detail.documents.length > 0 ? (
+                    <ul className="job-list">
+                      {detail.documents.map((doc) => (
+                        <li key={doc.document_id}>
+                          <div className="job-primary">
+                            <strong>{doc.document_type}</strong>
+                            <span>{doc.tag || "untagged"}</span>
+                          </div>
+                          <div className="job-secondary">
+                            <span>{formatDate(doc.uploaded_at)}</span>
+                            <span title={doc.file_path}>{doc.file_path}</span>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p>No job documents uploaded yet.</p>
+                  )}
+                </article>
+
+                <article className="job-files-card">
+                  <h4>Export History</h4>
+                  <div className="job-files-history-controls">
+                    <label>
+                      Type
+                      <select value={historyTypeFilter} onChange={(e) => setHistoryTypeFilter(e.target.value as "all" | "excel" | "pdf")}>
+                        <option value="all">All</option>
+                        <option value="excel">Excel</option>
+                        <option value="pdf">PDF</option>
+                      </select>
+                    </label>
+                    <label>
+                      From
+                      <input
+                        type="date"
+                        value={historyDateFrom}
+                        onChange={(e) => setHistoryDateFrom(e.target.value)}
+                      />
+                    </label>
+                    <label>
+                      To
+                      <input
+                        type="date"
+                        value={historyDateTo}
+                        onChange={(e) => setHistoryDateTo(e.target.value)}
+                      />
+                    </label>
+                  </div>
+                  <div className="job-files-history-cleanup">
+                    <label>
+                      Delete Older Than (days)
+                      <input
+                        value={cleanupDaysInput}
+                        onChange={(e) => setCleanupDaysInput(e.target.value)}
+                        placeholder="90"
+                      />
+                    </label>
+                    <button
+                      className="nav-item compact"
+                      type="button"
+                      onClick={() => void handleCleanupOldExports()}
+                      disabled={cleanupBusy}
+                    >
+                      {cleanupBusy ? "Deleting..." : "Delete Old Exports"}
+                    </button>
+                  </div>
+                  {filteredExportHistory.length > 0 ? (
+                    <ul className="job-list">
+                      {filteredExportHistory.map((item) => (
+                        <li key={item.export_id}>
+                          <div className="job-primary">
+                            <strong>{item.file_name}</strong>
+                            <span>{item.export_type.toUpperCase()}</span>
+                          </div>
+                          <div className="job-secondary">
+                            <span>{formatDate(item.created_at)}</span>
+                            <span>{item.file_exists ? "Available" : "Missing"}</span>
+                          </div>
+                          <div className="jobs-card-actions">
+                            <button
+                              className="nav-item compact"
+                              type="button"
+                              onClick={() => void handleDownloadHistory(item.export_id, item.file_name)}
+                              disabled={!item.file_exists || downloadingHistoryId === item.export_id}
+                            >
+                              {downloadingHistoryId === item.export_id ? "Opening..." : "Open Saved Version"}
+                            </button>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p>No export versions match your filters. Export a PDF/Excel or adjust filters.</p>
+                  )}
+                </article>
+              </div>
+            </div>
+          ) : null}
+        </article>
+      </section>
+    </section>
+  );
+}
+
+function SettingsView({ userId, username }: { userId: number; username: string }) {
+  const defaultPricingPickerRef = useRef<HTMLInputElement | null>(null);
+  const [profileLibrary, setProfileLibrary] = useState<BiddingProfileLibrary>(() => readBiddingProfileLibrary(userId));
+  const [profileForm, setProfileForm] = useState<BiddingProfileForm>(() => {
+    const library = readBiddingProfileLibrary(userId);
+    return biddingProfileToFormValues(getActiveBiddingProfile(library).settings);
+  });
+  const [profileNameInput, setProfileNameInput] = useState<string>(() => {
+    const library = readBiddingProfileLibrary(userId);
+    return getActiveBiddingProfile(library).name;
+  });
+  const [profileMessage, setProfileMessage] = useState<string | null>(null);
+  const [profileError, setProfileError] = useState<string | null>(null);
+
+  const [isSettingsUnlocked, setIsSettingsUnlocked] = useState(false);
+  const [settingsPassword, setSettingsPassword] = useState("");
+  const [settingsBusy, setSettingsBusy] = useState(false);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
+  const [alertSettings, setAlertSettings] = useState<WorkflowAlertSettings>(() => readWorkflowAlertSettings(userId));
+  const [alertForm, setAlertForm] = useState<WorkflowAlertSettingsForm>(() =>
+    alertSettingsToFormValues(readWorkflowAlertSettings(userId)),
+  );
+  const [alertsError, setAlertsError] = useState<string | null>(null);
+  const [alertsMessage, setAlertsMessage] = useState<string | null>(null);
+
+  const [workerPresetLibrary, setWorkerPresetLibrary] = useState<WorkerPresetLibrary>(() =>
+    readWorkerPresetLibrary(userId),
+  );
+  const [workerPresetEditorMode, setWorkerPresetEditorMode] = useState<EditorMode>("closed");
+  const [selectedWorkerPresetId, setSelectedWorkerPresetId] = useState<string>("");
+  const [workerPresetNameInput, setWorkerPresetNameInput] = useState<string>("");
+  const [workerPresetWorkers, setWorkerPresetWorkers] = useState<WorkerInput[]>([{ ...EMPTY_WORKER_INPUT }]);
+  const [workerPresetError, setWorkerPresetError] = useState<string | null>(null);
+  const [workerPresetMessage, setWorkerPresetMessage] = useState<string | null>(null);
+  const [savedWorkerLibrary, setSavedWorkerLibrary] = useState<SavedWorkerLibrary>(() =>
+    readSavedWorkerLibrary(userId),
+  );
+  const [savedWorkerEditorMode, setSavedWorkerEditorMode] = useState<EditorMode>("closed");
+  const [selectedSavedWorkerId, setSelectedSavedWorkerId] = useState<string>("");
+  const [savedWorkerForm, setSavedWorkerForm] = useState<WorkerInput>({ ...EMPTY_WORKER_INPUT });
+  const [savedWorkerError, setSavedWorkerError] = useState<string | null>(null);
+  const [savedWorkerMessage, setSavedWorkerMessage] = useState<string | null>(null);
+  const [defaultPricingPath, setDefaultPricingPath] = useState<string>(() => readDefaultPricingFilePath(userId));
+  const [defaultPricingError, setDefaultPricingError] = useState<string | null>(null);
+  const [defaultPricingMessage, setDefaultPricingMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    const library = readBiddingProfileLibrary(userId);
+    const active = getActiveBiddingProfile(library);
+    setProfileLibrary(library);
+    setProfileForm(biddingProfileToFormValues(active.settings));
+    setProfileNameInput(active.name);
+    setProfileMessage(null);
+    setProfileError(null);
+
+    const nextAlerts = readWorkflowAlertSettings(userId);
+    setAlertSettings(nextAlerts);
+    setAlertForm(alertSettingsToFormValues(nextAlerts));
+    setIsSettingsUnlocked(false);
+    setSettingsPassword("");
+    setSettingsBusy(false);
+    setSettingsError(null);
+    setAlertsError(null);
+    setAlertsMessage(null);
+
+    const presets = readWorkerPresetLibrary(userId);
+    setWorkerPresetLibrary(presets);
+    if (presets.presets.length > 0) {
+      const firstPreset = presets.presets[0];
+      setSelectedWorkerPresetId(firstPreset.preset_id);
+      setWorkerPresetNameInput(firstPreset.name);
+      setWorkerPresetWorkers(workerPresetWorkersToInputRows(firstPreset.workers));
+    } else {
+      setSelectedWorkerPresetId("");
+      setWorkerPresetNameInput("");
+      setWorkerPresetWorkers([{ ...EMPTY_WORKER_INPUT }]);
+    }
+    setWorkerPresetError(null);
+    setWorkerPresetMessage(null);
+    setWorkerPresetEditorMode("closed");
+
+    const savedWorkers = readSavedWorkerLibrary(userId);
+    setSavedWorkerLibrary(savedWorkers);
+    if (savedWorkers.workers.length > 0) {
+      const firstWorker = savedWorkers.workers[0];
+      setSelectedSavedWorkerId(firstWorker.worker_id);
+      setSavedWorkerForm({
+        name: firstWorker.name,
+        wage_per_hour: String(firstWorker.wage_per_hour),
+        hours: String(firstWorker.hours),
+      });
+    } else {
+      setSelectedSavedWorkerId("");
+      setSavedWorkerForm({ ...EMPTY_WORKER_INPUT });
+    }
+    setSavedWorkerError(null);
+    setSavedWorkerMessage(null);
+    setSavedWorkerEditorMode("closed");
+    setDefaultPricingPath(readDefaultPricingFilePath(userId));
+    setDefaultPricingError(null);
+    setDefaultPricingMessage(null);
+  }, [userId]);
+
+  const setProfileField = (key: BiddingProfileFormField, value: string) => {
+    setProfileForm((prev) => ({
+      ...prev,
+      [key]: value,
+    }));
+    setProfileError(null);
+    setProfileMessage(null);
+  };
+
+  const switchActiveProfile = (profileId: string) => {
+    const next = normalizeBiddingProfileLibrary({
+      ...profileLibrary,
+      active_profile_id: profileId,
+    });
+    setProfileLibrary(next);
+    writeBiddingProfileLibrary(userId, next);
+    const active = getActiveBiddingProfile(next);
+    setProfileForm(biddingProfileToFormValues(active.settings));
+    setProfileNameInput(active.name);
+    setProfileError(null);
+    setProfileMessage(`Active profile: ${active.name}.`);
+  };
+
+  const parseProfileFormSettings = (): BiddingProfileSettings | null => {
+    const parseField = (value: string, label: string, min: number, max?: number): number | null => {
+      const parsed = Number(value);
+      if (!Number.isFinite(parsed)) {
+        setProfileError(`${label} must be a valid number.`);
+        return null;
+      }
+      if (parsed < min) {
+        setProfileError(`${label} must be at least ${min}.`);
+        return null;
+      }
+      if (typeof max === "number" && parsed > max) {
+        setProfileError(`${label} must be at most ${max}.`);
+        return null;
+      }
+      return parsed;
+    };
+
+    const active = getActiveBiddingProfile(profileLibrary);
+    const laborMarkup = parseField(profileForm.labor_markup_pct, "Labor markup", 0, 200);
+    if (laborMarkup === null) {
+      return null;
+    }
+    const overhead = parseField(profileForm.overhead_pct, "Overhead", 0, 200);
+    if (overhead === null) {
+      return null;
+    }
+    const profit = parseField(profileForm.profit_pct, "Profit", 0, 300);
+    if (profit === null) {
+      return null;
+    }
+    const commission = parseField(profileForm.commission_amount, "Commission", 0);
+    if (commission === null) {
+      return null;
+    }
+    const toolsRental = parseField(profileForm.tools_rental_amount, "Tools/Rental amount", 0);
+    if (toolsRental === null) {
+      return null;
+    }
+    const shipping = parseField(profileForm.shipping_amount, "Shipping amount", 0);
+    if (shipping === null) {
+      return null;
+    }
+    const useTax = parseField(profileForm.use_tax_pct, "Use tax", 0, 100);
+    if (useTax === null) {
+      return null;
+    }
+    const minimumBid = parseField(profileForm.minimum_bid_amount, "Minimum bid floor", 0);
+    if (minimumBid === null) {
+      return null;
+    }
+    const roundingIncrement = parseField(profileForm.rounding_increment, "Rounding increment", 0);
+    if (roundingIncrement === null) {
+      return null;
+    }
+    const roundingMode: BiddingProfileRoundingMode =
+      profileForm.rounding_mode === "nearest" || profileForm.rounding_mode === "up" || profileForm.rounding_mode === "down"
+        ? profileForm.rounding_mode
+        : "none";
+    if (roundingMode !== "none" && roundingIncrement <= 0) {
+      setProfileError("Rounding increment must be greater than 0 when rounding mode is enabled.");
+      return null;
+    }
+
+    return {
+      ...active.settings,
+      labor_markup_pct: laborMarkup,
+      overhead_pct: overhead,
+      profit_pct: profit,
+      commission_amount: commission,
+      tools_rental_amount: toolsRental,
+      tools_rental_type: profileForm.tools_rental_type === "%" ? "%" : "$",
+      shipping_amount: shipping,
+      use_tax_pct: useTax,
+      minimum_bid_amount: minimumBid,
+      rounding_increment: roundingIncrement,
+      rounding_mode: roundingMode,
+    };
+  };
+
+  const saveActiveProfile = () => {
+    const updatedSettings = parseProfileFormSettings();
+    if (!updatedSettings) {
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const active = getActiveBiddingProfile(profileLibrary);
+    const next = normalizeBiddingProfileLibrary({
+      ...profileLibrary,
+      profiles: profileLibrary.profiles.map((profile) =>
+        profile.profile_id === active.profile_id
+          ? { ...profile, settings: updatedSettings, updated_at: now }
+          : profile,
+      ),
+    });
+    setProfileLibrary(next);
+    writeBiddingProfileLibrary(userId, next);
+    setProfileError(null);
+    setProfileMessage("Active profile saved.");
+  };
+
+  const createProfileFromCurrent = () => {
+    const newSettings = parseProfileFormSettings();
+    if (!newSettings) {
+      return;
+    }
+    const nextName = normalizeProfileName(profileNameInput);
+    const duplicateName = profileLibrary.profiles.some(
+      (profile) => profile.name.trim().toLowerCase() === nextName.toLowerCase(),
+    );
+    if (duplicateName) {
+      setProfileError(`A profile named "${nextName}" already exists.`);
+      return;
+    }
+
+    const created = buildNamedProfile(nextName, newSettings);
+    const next = normalizeBiddingProfileLibrary({
+      active_profile_id: created.profile_id,
+      profiles: [...profileLibrary.profiles, created],
+    });
+    setProfileLibrary(next);
+    writeBiddingProfileLibrary(userId, next);
+    setProfileForm(biddingProfileToFormValues(created.settings));
+    setProfileNameInput(created.name);
+    setProfileError(null);
+    setProfileMessage(`Created profile ${created.name}.`);
+  };
+
+  const renameActiveProfile = () => {
+    const active = getActiveBiddingProfile(profileLibrary);
+    const nextName = normalizeProfileName(profileNameInput);
+    const duplicateName = profileLibrary.profiles.some(
+      (profile) =>
+        profile.profile_id !== active.profile_id &&
+        profile.name.trim().toLowerCase() === nextName.toLowerCase(),
+    );
+    if (duplicateName) {
+      setProfileError(`A profile named "${nextName}" already exists.`);
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const next = normalizeBiddingProfileLibrary({
+      ...profileLibrary,
+      profiles: profileLibrary.profiles.map((profile) =>
+        profile.profile_id === active.profile_id ? { ...profile, name: nextName, updated_at: now } : profile,
+      ),
+    });
+    setProfileLibrary(next);
+    writeBiddingProfileLibrary(userId, next);
+    setProfileNameInput(nextName);
+    setProfileError(null);
+    setProfileMessage(`Renamed active profile to ${nextName}.`);
+  };
+
+  const deleteActiveProfile = () => {
+    if (profileLibrary.profiles.length <= 1) {
+      setProfileError("At least one bidding profile is required.");
+      return;
+    }
+    const active = getActiveBiddingProfile(profileLibrary);
+    if (!window.confirm(`Delete profile "${active.name}"?`)) {
+      return;
+    }
+
+    const remaining = profileLibrary.profiles.filter((profile) => profile.profile_id !== active.profile_id);
+    const next = normalizeBiddingProfileLibrary({
+      active_profile_id: remaining[0].profile_id,
+      profiles: remaining,
+    });
+    const nextActive = getActiveBiddingProfile(next);
+    setProfileLibrary(next);
+    writeBiddingProfileLibrary(userId, next);
+    setProfileForm(biddingProfileToFormValues(nextActive.settings));
+    setProfileNameInput(nextActive.name);
+    setProfileError(null);
+    setProfileMessage(`Deleted profile ${active.name}. Active profile is now ${nextActive.name}.`);
+  };
+
+  const setAlertFieldValue = (key: WorkflowAlertSettingsField, value: string) => {
+    setAlertForm((prev) => ({
+      ...prev,
+      [key]: value,
+    }));
+    setAlertsError(null);
+    setAlertsMessage(null);
+  };
+
+  const unlockSettingsAccess = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!settingsPassword.trim()) {
+      setSettingsError("Enter your password to access Settings.");
+      return;
+    }
+
+    try {
+      setSettingsBusy(true);
+      setSettingsError(null);
+      const verifyResult = await verifyPassword({ password: settingsPassword });
+      if (!verifyResult.valid) {
+        setSettingsError("Password confirmation failed for this account.");
+        return;
+      }
+      setIsSettingsUnlocked(true);
+      setSettingsPassword("");
+      setAlertForm(alertSettingsToFormValues(alertSettings));
+    } catch (err) {
+      setSettingsError(err instanceof Error ? err.message : "Password confirmation failed.");
+    } finally {
+      setSettingsBusy(false);
+    }
+  };
+
+  const saveAlertSettings = (event: FormEvent) => {
+    event.preventDefault();
+    const nextSettings = { ...alertSettings };
+    for (const field of workflowAlertSettingFields) {
+      const rawValue = (alertForm[field.key] ?? "").trim();
+      if (!rawValue) {
+        setAlertsError(`${field.label} is required.`);
+        return;
+      }
+      const parsed = Number(rawValue);
+      if (!Number.isFinite(parsed) || !Number.isInteger(parsed)) {
+        setAlertsError(`${field.label} must be a whole number.`);
+        return;
+      }
+      if (parsed < field.min || parsed > field.max) {
+        setAlertsError(`${field.label} must be between ${field.min} and ${field.max} days.`);
+        return;
+      }
+      nextSettings[field.key] = parsed;
+    }
+    setAlertSettings(nextSettings);
+    writeWorkflowAlertSettings(userId, nextSettings);
+    setAlertsError(null);
+    setAlertsMessage("Alerts settings saved.");
+  };
+
+  const updateWorkerPresetLibrary = (nextLibrary: WorkerPresetLibrary) => {
+    const normalized = normalizeWorkerPresetLibrary(nextLibrary);
+    setWorkerPresetLibrary(normalized);
+    writeWorkerPresetLibrary(userId, normalized);
+    return normalized;
+  };
+
+  const loadWorkerPresetIntoForm = (presetId: string, showMessage = true) => {
+    setSelectedWorkerPresetId(presetId);
+    const preset = workerPresetLibrary.presets.find((candidate) => candidate.preset_id === presetId);
+    if (!preset) {
+      setWorkerPresetNameInput("");
+      setWorkerPresetWorkers([{ ...EMPTY_WORKER_INPUT }]);
+      return;
+    }
+    setWorkerPresetNameInput(preset.name);
+    setWorkerPresetWorkers(workerPresetWorkersToInputRows(preset.workers));
+    setWorkerPresetError(null);
+    setWorkerPresetMessage(showMessage ? `Loaded preset ${preset.name}.` : null);
+  };
+
+  const openCreateWorkerPresetEditor = () => {
+    setWorkerPresetEditorMode("create");
+    setSelectedWorkerPresetId("");
+    setWorkerPresetNameInput("");
+    setWorkerPresetWorkers([{ ...EMPTY_WORKER_INPUT }]);
+    setWorkerPresetError(null);
+    setWorkerPresetMessage(null);
+  };
+
+  const openEditWorkerPresetEditor = () => {
+    if (workerPresetLibrary.presets.length === 0) {
+      setWorkerPresetEditorMode("create");
+      setSelectedWorkerPresetId("");
+      setWorkerPresetNameInput("");
+      setWorkerPresetWorkers([{ ...EMPTY_WORKER_INPUT }]);
+      setWorkerPresetError("No crew presets found. Create a preset first.");
+      setWorkerPresetMessage(null);
+      return;
+    }
+    const targetPresetId =
+      selectedWorkerPresetId &&
+      workerPresetLibrary.presets.some((preset) => preset.preset_id === selectedWorkerPresetId)
+        ? selectedWorkerPresetId
+        : workerPresetLibrary.presets[0].preset_id;
+    setWorkerPresetEditorMode("edit");
+    loadWorkerPresetIntoForm(targetPresetId, false);
+  };
+
+  const closeWorkerPresetEditor = () => {
+    setWorkerPresetEditorMode("closed");
+    setWorkerPresetError(null);
+    setWorkerPresetMessage(null);
+  };
+
+  const parseWorkerPresetWorkers = (): WorkerPresetWorker[] | null => {
+    const parsed = workerInputRowsToPresetWorkers(workerPresetWorkers);
+    if (parsed.length === 0) {
+      setWorkerPresetError("Add at least one worker with a name.");
+      return null;
+    }
+    return parsed;
+  };
+
+  const saveWorkerPreset = () => {
+    if (workerPresetEditorMode === "closed") {
+      setWorkerPresetError("Choose Create Preset or Edit Preset first.");
+      return;
+    }
+    const isEditing = workerPresetEditorMode === "edit";
+    if (isEditing && !selectedWorkerPresetId) {
+      setWorkerPresetError("Select a preset to edit.");
+      return;
+    }
+    const workers = parseWorkerPresetWorkers();
+    if (!workers) {
+      return;
+    }
+    const nextName = normalizeWorkerPresetName(workerPresetNameInput);
+    const nameTaken = workerPresetLibrary.presets.some(
+      (preset) =>
+        preset.preset_id !== (isEditing ? selectedWorkerPresetId : "") &&
+        preset.name.trim().toLowerCase() === nextName.toLowerCase(),
+    );
+    if (nameTaken) {
+      setWorkerPresetError(`A worker preset named "${nextName}" already exists.`);
+      return;
+    }
+    if (!isEditing) {
+      const created = {
+        preset_id: createWorkerPresetId(),
+        name: nextName,
+        workers,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      } satisfies WorkerPreset;
+      updateWorkerPresetLibrary({ presets: [...workerPresetLibrary.presets, created] });
+      setSelectedWorkerPresetId(created.preset_id);
+      setWorkerPresetEditorMode("edit");
+      setWorkerPresetError(null);
+      setWorkerPresetMessage(`Created preset ${created.name}.`);
+      return;
+    }
+    const now = new Date().toISOString();
+    updateWorkerPresetLibrary({
+      presets: workerPresetLibrary.presets.map((preset) =>
+        preset.preset_id === selectedWorkerPresetId
+          ? { ...preset, name: nextName, workers, updated_at: now }
+          : preset,
+      ),
+    });
+    setWorkerPresetMessage(`Saved preset ${nextName}.`);
+    setWorkerPresetError(null);
+  };
+
+  const newWorkerPreset = () => {
+    openCreateWorkerPresetEditor();
+  };
+
+  const deleteWorkerPreset = () => {
+    if (!selectedWorkerPresetId) {
+      setWorkerPresetError("Select a preset to delete.");
+      return;
+    }
+    const current = workerPresetLibrary.presets.find((preset) => preset.preset_id === selectedWorkerPresetId);
+    if (!current) {
+      setWorkerPresetError("Select a valid preset to delete.");
+      return;
+    }
+    if (!window.confirm(`Delete worker preset "${current.name}"?`)) {
+      return;
+    }
+    const remaining = workerPresetLibrary.presets.filter((preset) => preset.preset_id !== selectedWorkerPresetId);
+    updateWorkerPresetLibrary({ presets: remaining });
+    if (remaining.length > 0) {
+      setWorkerPresetEditorMode("edit");
+      loadWorkerPresetIntoForm(remaining[0].preset_id, false);
+    } else {
+      setWorkerPresetEditorMode("create");
+      setSelectedWorkerPresetId("");
+      setWorkerPresetNameInput("");
+      setWorkerPresetWorkers([{ ...EMPTY_WORKER_INPUT }]);
+    }
+    setWorkerPresetMessage(`Deleted preset ${current.name}.`);
+    setWorkerPresetError(null);
+  };
+
+  const updateSavedWorkerLibrary = (nextLibrary: SavedWorkerLibrary) => {
+    const normalized = normalizeSavedWorkerLibrary(nextLibrary);
+    setSavedWorkerLibrary(normalized);
+    writeSavedWorkerLibrary(userId, normalized);
+    return normalized;
+  };
+
+  const loadSavedWorkerToForm = (workerId: string, showMessage = true) => {
+    setSelectedSavedWorkerId(workerId);
+    const worker = savedWorkerLibrary.workers.find((candidate) => candidate.worker_id === workerId);
+    if (!worker) {
+      setSavedWorkerForm({ ...EMPTY_WORKER_INPUT });
+      return;
+    }
+    setSavedWorkerForm({
+      name: worker.name,
+      wage_per_hour: String(worker.wage_per_hour),
+      hours: String(worker.hours),
+    });
+    setSavedWorkerError(null);
+    setSavedWorkerMessage(showMessage ? `Loaded saved worker ${worker.name}.` : null);
+  };
+
+  const openCreateSavedWorkerEditor = () => {
+    setSavedWorkerEditorMode("create");
+    setSelectedSavedWorkerId("");
+    setSavedWorkerForm({ ...EMPTY_WORKER_INPUT });
+    setSavedWorkerError(null);
+    setSavedWorkerMessage(null);
+  };
+
+  const openEditSavedWorkerEditor = () => {
+    if (savedWorkerLibrary.workers.length === 0) {
+      setSavedWorkerEditorMode("create");
+      setSelectedSavedWorkerId("");
+      setSavedWorkerForm({ ...EMPTY_WORKER_INPUT });
+      setSavedWorkerError("No saved workers found. Create a worker first.");
+      setSavedWorkerMessage(null);
+      return;
+    }
+    const targetWorkerId =
+      selectedSavedWorkerId &&
+      savedWorkerLibrary.workers.some((worker) => worker.worker_id === selectedSavedWorkerId)
+        ? selectedSavedWorkerId
+        : savedWorkerLibrary.workers[0].worker_id;
+    setSavedWorkerEditorMode("edit");
+    loadSavedWorkerToForm(targetWorkerId, false);
+  };
+
+  const closeSavedWorkerEditor = () => {
+    setSavedWorkerEditorMode("closed");
+    setSavedWorkerError(null);
+    setSavedWorkerMessage(null);
+  };
+
+  const parseSavedWorkerForm = (): { name: string; wage_per_hour: number; hours: number } | null => {
+    const name = savedWorkerForm.name.trim();
+    if (!name) {
+      setSavedWorkerError("Worker name is required.");
+      return null;
+    }
+    const wage = toNumber(savedWorkerForm.wage_per_hour);
+    if (wage === undefined || wage < 0) {
+      setSavedWorkerError("Wage/hour must be a valid non-negative number.");
+      return null;
+    }
+    const hours = toNumber(savedWorkerForm.hours);
+    if (hours === undefined || hours < 0) {
+      setSavedWorkerError("Hours must be a valid non-negative number.");
+      return null;
+    }
+    return { name, wage_per_hour: wage, hours };
+  };
+
+  const saveSavedWorker = () => {
+    if (savedWorkerEditorMode === "closed") {
+      setSavedWorkerError("Choose Create Worker or Edit Worker first.");
+      return;
+    }
+    const isEditing = savedWorkerEditorMode === "edit";
+    if (isEditing && !selectedSavedWorkerId) {
+      setSavedWorkerError("Select a saved worker to edit.");
+      return;
+    }
+    const parsed = parseSavedWorkerForm();
+    if (!parsed) {
+      return;
+    }
+    const duplicateName = savedWorkerLibrary.workers.some(
+      (worker) =>
+        worker.worker_id !== (isEditing ? selectedSavedWorkerId : "") &&
+        worker.name.trim().toLowerCase() === parsed.name.toLowerCase(),
+    );
+    if (duplicateName) {
+      setSavedWorkerError(`A saved worker named "${parsed.name}" already exists.`);
+      return;
+    }
+
+    if (!isEditing) {
+      const created: SavedWorker = {
+        worker_id: createSavedWorkerId(),
+        name: parsed.name,
+        wage_per_hour: parsed.wage_per_hour,
+        hours: parsed.hours,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      updateSavedWorkerLibrary({ workers: [...savedWorkerLibrary.workers, created] });
+      setSelectedSavedWorkerId(created.worker_id);
+      setSavedWorkerEditorMode("edit");
+      setSavedWorkerError(null);
+      setSavedWorkerMessage(`Saved worker ${created.name}.`);
+      return;
+    }
+
+    const now = new Date().toISOString();
+    updateSavedWorkerLibrary({
+      workers: savedWorkerLibrary.workers.map((worker) =>
+        worker.worker_id === selectedSavedWorkerId
+          ? {
+              ...worker,
+              name: parsed.name,
+              wage_per_hour: parsed.wage_per_hour,
+              hours: parsed.hours,
+              updated_at: now,
+            }
+          : worker,
+      ),
+    });
+    setSavedWorkerError(null);
+    setSavedWorkerMessage(`Saved worker ${parsed.name}.`);
+  };
+
+  const newSavedWorker = () => {
+    openCreateSavedWorkerEditor();
+  };
+
+  const deleteSavedWorker = () => {
+    if (!selectedSavedWorkerId) {
+      setSavedWorkerError("Select a saved worker to delete.");
+      return;
+    }
+    const current = savedWorkerLibrary.workers.find((worker) => worker.worker_id === selectedSavedWorkerId);
+    if (!current) {
+      setSavedWorkerError("Select a valid saved worker to delete.");
+      return;
+    }
+    if (!window.confirm(`Delete saved worker "${current.name}"?`)) {
+      return;
+    }
+    const remaining = savedWorkerLibrary.workers.filter((worker) => worker.worker_id !== selectedSavedWorkerId);
+    updateSavedWorkerLibrary({ workers: remaining });
+    if (remaining.length > 0) {
+      const nextWorker = remaining[0];
+      setSavedWorkerEditorMode("edit");
+      setSelectedSavedWorkerId(nextWorker.worker_id);
+      setSavedWorkerForm({
+        name: nextWorker.name,
+        wage_per_hour: String(nextWorker.wage_per_hour),
+        hours: String(nextWorker.hours),
+      });
+    } else {
+      setSavedWorkerEditorMode("create");
+      setSelectedSavedWorkerId("");
+      setSavedWorkerForm({ ...EMPTY_WORKER_INPUT });
+    }
+    setSavedWorkerError(null);
+    setSavedWorkerMessage(`Deleted saved worker ${current.name}.`);
+  };
+
+  const updatePresetWorker = (index: number, patch: Partial<WorkerInput>) => {
+    setWorkerPresetWorkers((prev) =>
+      prev.map((worker, i) => (i === index ? { ...worker, ...patch } : worker)),
+    );
+    setWorkerPresetError(null);
+    setWorkerPresetMessage(null);
+  };
+
+  const removePresetWorker = (index: number) => {
+    setWorkerPresetWorkers((prev) => {
+      if (prev.length <= 1) {
+        return prev;
+      }
+      return prev.filter((_, i) => i !== index);
+    });
+    setWorkerPresetError(null);
+    setWorkerPresetMessage(null);
+  };
+
+  const saveDefaultPricingPath = () => {
+    const normalized = defaultPricingPath.trim();
+    if (!normalized) {
+      setDefaultPricingError("Enter a valid Excel file path or choose a file.");
+      setDefaultPricingMessage(null);
+      return;
+    }
+    writeDefaultPricingFilePath(userId, normalized);
+    setDefaultPricingPath(normalized);
+    setDefaultPricingError(null);
+    setDefaultPricingMessage("Default pricing file saved.");
+  };
+
+  const chooseDefaultPricingFile = async () => {
+    setDefaultPricingError(null);
+    setDefaultPricingMessage(null);
+
+    const selectedPath = await pickExcelFilePathFromDesktop();
+    if (selectedPath) {
+      writeDefaultPricingFilePath(userId, selectedPath);
+      setDefaultPricingPath(selectedPath);
+      setDefaultPricingMessage("Default pricing file saved.");
+      return;
+    }
+
+    defaultPricingPickerRef.current?.click();
+  };
+
+  const clearDefaultPricingPath = () => {
+    writeDefaultPricingFilePath(userId, "");
+    setDefaultPricingPath("");
+    setDefaultPricingError(null);
+    setDefaultPricingMessage("Default pricing file cleared.");
+  };
+
+  const handleDefaultPricingFileSelected = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+    const nativePath = getNativeFilePath(file);
+    if (!nativePath) {
+      setDefaultPricingError(
+        "Unable to read local file path from this selection. Paste the path manually or use desktop file picker.",
+      );
+      setDefaultPricingMessage(null);
+      event.target.value = "";
+      return;
+    }
+    writeDefaultPricingFilePath(userId, nativePath);
+    setDefaultPricingPath(nativePath);
+    setDefaultPricingError(null);
+    setDefaultPricingMessage("Default pricing file saved.");
+    event.target.value = "";
+  };
+
+  return (
+    <section className="panel-stack settings-shell">
+      <article className="panel">
+        <h2>Settings</h2>
+        <p>Manage bidding profiles, workflow alerts, and worker presets for the team.</p>
+        <p className="settings-username"><strong>User:</strong> {username}</p>
+      </article>
+      {!isSettingsUnlocked ? (
+        <article className="panel settings-section">
+          <h3>Enter Settings Password</h3>
+          <p className="alerts-modal-intro">
+            Confirm your account password to open settings.
+          </p>
+          {settingsError ? <p className="alerts-modal-error">{settingsError}</p> : null}
+          <form className="alerts-lock-form" onSubmit={unlockSettingsAccess}>
+            <label>
+              Account Password
+              <input
+                type="password"
+                value={settingsPassword}
+                onChange={(e) => setSettingsPassword(e.target.value)}
+                autoComplete="current-password"
+                required
+                disabled={settingsBusy}
+              />
+            </label>
+            <button className="nav-item" type="submit" disabled={settingsBusy}>
+              {settingsBusy ? "Checking..." : "Open Settings"}
+            </button>
+          </form>
+        </article>
+      ) : (
+        <>
+      <article className="panel settings-section">
+        <div className="settings-section-header">
+          <h3>Default Pricing Excel File</h3>
+          <div className="bidding-profile-actions">
+            <button
+              className="nav-item compact"
+              type="button"
+              onClick={() => void chooseDefaultPricingFile()}
+            >
+              Choose Excel
+            </button>
+            <button className="nav-item compact" type="button" onClick={saveDefaultPricingPath}>
+              Save As Default
+            </button>
+            <button className="nav-item compact" type="button" onClick={clearDefaultPricingPath}>
+              Clear
+            </button>
+          </div>
         </div>
-      ) : null}
+        <p className="bidding-profile-note">
+          This file will auto-fill on the Bidding page so you do not need to choose it each time.
+        </p>
+        {defaultPricingMessage ? <p className="bidding-profile-feedback">{defaultPricingMessage}</p> : null}
+        {defaultPricingError ? <p className="alerts-modal-error">{defaultPricingError}</p> : null}
+        <label>
+          Excel File Path
+          <input
+            value={defaultPricingPath}
+            onChange={(e) => {
+              setDefaultPricingPath(e.target.value);
+              setDefaultPricingError(null);
+              setDefaultPricingMessage(null);
+            }}
+            placeholder="C:\\Projects\\Pricing\\ERICO_Price_List.xlsx"
+          />
+        </label>
+        <input
+          ref={defaultPricingPickerRef}
+          type="file"
+          accept=".xlsx,.xls,.xlsm,.csv"
+          onChange={handleDefaultPricingFileSelected}
+          style={{ display: "none" }}
+        />
+      </article>
+      <article className="panel settings-section">
+        <div className="settings-section-header">
+          <h3>Bidding Profile</h3>
+          <div className="bidding-profile-actions">
+            <button className="nav-item compact" type="button" onClick={saveActiveProfile}>
+              Save Active
+            </button>
+            <button className="nav-item compact" type="button" onClick={createProfileFromCurrent}>
+              Save As New
+            </button>
+            <button className="nav-item compact" type="button" onClick={renameActiveProfile}>
+              Rename Active
+            </button>
+            <button className="nav-item compact" type="button" onClick={deleteActiveProfile}>
+              Delete Active
+            </button>
+          </div>
+        </div>
+        <p className="bidding-profile-note">Pricing profile used during bid preview and export.</p>
+        {profileMessage ? <p className="bidding-profile-feedback">{profileMessage}</p> : null}
+        {profileError ? <p className="alerts-modal-error">{profileError}</p> : null}
+        <div className="bidding-profile-meta">
+          <label>
+            Active Profile
+            <select
+              value={profileLibrary.active_profile_id}
+              onChange={(e) => switchActiveProfile(e.target.value)}
+            >
+              {profileLibrary.profiles.map((profile) => (
+                <option key={profile.profile_id} value={profile.profile_id}>
+                  {profile.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Profile Name
+            <input
+              value={profileNameInput}
+              onChange={(e) => {
+                setProfileNameInput(e.target.value);
+                setProfileError(null);
+                setProfileMessage(null);
+              }}
+              placeholder="Commercial"
+            />
+          </label>
+        </div>
+        <div className="bidding-profile-grid">
+          <label>
+            Labor Markup (%)
+            <input value={profileForm.labor_markup_pct} onChange={(e) => setProfileField("labor_markup_pct", e.target.value)} />
+          </label>
+          <label>
+            Overhead (%)
+            <input value={profileForm.overhead_pct} onChange={(e) => setProfileField("overhead_pct", e.target.value)} />
+          </label>
+          <label>
+            Profit (%)
+            <input value={profileForm.profit_pct} onChange={(e) => setProfileField("profit_pct", e.target.value)} />
+          </label>
+          <label>
+            Use Tax (%)
+            <input value={profileForm.use_tax_pct} onChange={(e) => setProfileField("use_tax_pct", e.target.value)} />
+          </label>
+          <label>
+            Shipping ($)
+            <input value={profileForm.shipping_amount} onChange={(e) => setProfileField("shipping_amount", e.target.value)} />
+          </label>
+          <label>
+            Commission ($)
+            <input value={profileForm.commission_amount} onChange={(e) => setProfileField("commission_amount", e.target.value)} />
+          </label>
+          <label>
+            Tools/Rental Type
+            <select value={profileForm.tools_rental_type} onChange={(e) => setProfileField("tools_rental_type", e.target.value)}>
+              <option value="$">Flat Dollar ($)</option>
+              <option value="%">Percent of Subtotal (%)</option>
+            </select>
+          </label>
+          <label>
+            Tools/Rental Value
+            <input value={profileForm.tools_rental_amount} onChange={(e) => setProfileField("tools_rental_amount", e.target.value)} />
+          </label>
+          <label>
+            Minimum Bid Floor ($)
+            <input value={profileForm.minimum_bid_amount} onChange={(e) => setProfileField("minimum_bid_amount", e.target.value)} />
+          </label>
+          <label>
+            Rounding Mode
+            <select value={profileForm.rounding_mode} onChange={(e) => setProfileField("rounding_mode", e.target.value)}>
+              <option value="none">None</option>
+              <option value="nearest">Nearest Increment</option>
+              <option value="up">Always Up</option>
+              <option value="down">Always Down</option>
+            </select>
+          </label>
+          <label>
+            Rounding Increment ($)
+            <input value={profileForm.rounding_increment} onChange={(e) => setProfileField("rounding_increment", e.target.value)} />
+          </label>
+        </div>
+      </article>
+
+      <article className="panel settings-section">
+        <div className="settings-section-header">
+          <h3>Alerts</h3>
+        </div>
+        <p className="alerts-modal-intro">Moved from Jobs Board to central settings.</p>
+        {alertsError ? <p className="alerts-modal-error">{alertsError}</p> : null}
+        {alertsMessage ? <p className="bidding-profile-feedback">{alertsMessage}</p> : null}
+        <form className="alerts-settings-form" onSubmit={saveAlertSettings}>
+          {workflowAlertSettingFields.map((field) => (
+            <label key={field.key}>
+              {field.label}
+              <input
+                type="number"
+                min={field.min}
+                max={field.max}
+                step={1}
+                value={alertForm[field.key]}
+                onChange={(e) => setAlertFieldValue(field.key, e.target.value)}
+              />
+              <small>{field.description}</small>
+            </label>
+          ))}
+          <div className="alerts-modal-actions">
+            <button className="nav-item compact" type="button" onClick={() => setAlertForm(alertSettingsToFormValues(alertSettings))}>
+              Reset
+            </button>
+            <button className="nav-item" type="submit">Save Alerts</button>
+          </div>
+        </form>
+      </article>
+
+      <article className="panel settings-section">
+        <div className="settings-section-header">
+          <h3>Worker Presets</h3>
+          <div className="bidding-profile-actions">
+            <button
+              className={`nav-item compact${workerPresetEditorMode === "create" ? " active" : ""}`}
+              type="button"
+              onClick={newWorkerPreset}
+            >
+              Create Preset
+            </button>
+            <button
+              className={`nav-item compact${workerPresetEditorMode === "edit" ? " active" : ""}`}
+              type="button"
+              onClick={openEditWorkerPresetEditor}
+            >
+              Edit Preset
+            </button>
+          </div>
+        </div>
+        <p className="bidding-profile-note">Managers can create crew templates for bidding.</p>
+        {workerPresetError ? <p className="alerts-modal-error">{workerPresetError}</p> : null}
+        {workerPresetMessage ? <p className="bidding-profile-feedback">{workerPresetMessage}</p> : null}
+        {workerPresetEditorMode !== "closed" ? (
+          <div className="settings-editor-shell">
+            <div className="bidding-profile-meta">
+              {workerPresetEditorMode === "edit" ? (
+                <label>
+                  Preset
+                  <select
+                    value={selectedWorkerPresetId}
+                    onChange={(e) => loadWorkerPresetIntoForm(e.target.value, false)}
+                  >
+                    <option value="">Select preset</option>
+                    {workerPresetLibrary.presets.map((preset) => (
+                      <option key={preset.preset_id} value={preset.preset_id}>
+                        {preset.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
+              <label>
+                Preset Name
+                <input
+                  value={workerPresetNameInput}
+                  onChange={(e) => {
+                    setWorkerPresetNameInput(e.target.value);
+                    setWorkerPresetError(null);
+                    setWorkerPresetMessage(null);
+                  }}
+                  placeholder="Service Crew A"
+                />
+              </label>
+            </div>
+            <div className="worker-grid">
+              {workerPresetWorkers.map((worker, index) => (
+                <div key={index} className="worker-row worker-row-with-remove">
+                  <input
+                    placeholder="Name"
+                    value={worker.name}
+                    onChange={(e) => updatePresetWorker(index, { name: e.target.value })}
+                  />
+                  <input
+                    placeholder="Wage/hour"
+                    value={worker.wage_per_hour}
+                    onChange={(e) => updatePresetWorker(index, { wage_per_hour: e.target.value })}
+                  />
+                  <input
+                    placeholder="Hours"
+                    value={worker.hours}
+                    onChange={(e) => updatePresetWorker(index, { hours: e.target.value })}
+                  />
+                  <button
+                    className="nav-item compact"
+                    type="button"
+                    onClick={() => removePresetWorker(index)}
+                    disabled={workerPresetWorkers.length <= 1}
+                  >
+                    Remove
+                  </button>
+                </div>
+              ))}
+            </div>
+            <div className="settings-editor-actions">
+              <button
+                className="nav-item compact"
+                type="button"
+                onClick={() => setWorkerPresetWorkers((prev) => [...prev, { ...EMPTY_WORKER_INPUT }])}
+              >
+                Add Worker
+              </button>
+              <button className="nav-item compact" type="button" onClick={saveWorkerPreset}>
+                {workerPresetEditorMode === "create" ? "Create Preset" : "Save Preset"}
+              </button>
+              {workerPresetEditorMode === "edit" ? (
+                <button className="nav-item compact" type="button" onClick={deleteWorkerPreset}>
+                  Delete Preset
+                </button>
+              ) : null}
+              <button className="nav-item compact" type="button" onClick={closeWorkerPresetEditor}>
+                Close
+              </button>
+            </div>
+          </div>
+        ) : (
+          <p className="settings-editor-empty">Click Create Preset or Edit Preset to open this editor.</p>
+        )}
+      </article>
+
+      <article className="panel settings-section">
+        <div className="settings-section-header">
+          <h3>Saved Workers</h3>
+          <div className="bidding-profile-actions">
+            <button
+              className={`nav-item compact${savedWorkerEditorMode === "create" ? " active" : ""}`}
+              type="button"
+              onClick={newSavedWorker}
+            >
+              Create Worker
+            </button>
+            <button
+              className={`nav-item compact${savedWorkerEditorMode === "edit" ? " active" : ""}`}
+              type="button"
+              onClick={openEditSavedWorkerEditor}
+            >
+              Edit Worker
+            </button>
+          </div>
+        </div>
+        <p className="bidding-profile-note">
+          Save individual workers so you can add them to bids with or without a crew preset.
+        </p>
+        {savedWorkerError ? <p className="alerts-modal-error">{savedWorkerError}</p> : null}
+        {savedWorkerMessage ? <p className="bidding-profile-feedback">{savedWorkerMessage}</p> : null}
+        {savedWorkerEditorMode !== "closed" ? (
+          <div className="settings-editor-shell">
+            <div className="bidding-profile-meta">
+              {savedWorkerEditorMode === "edit" ? (
+                <label>
+                  Saved Worker
+                  <select
+                    value={selectedSavedWorkerId}
+                    onChange={(e) => loadSavedWorkerToForm(e.target.value, false)}
+                  >
+                    <option value="">Select saved worker</option>
+                    {savedWorkerLibrary.workers.map((worker) => (
+                      <option key={worker.worker_id} value={worker.worker_id}>
+                        {worker.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
+              <label>
+                Name
+                <input
+                  value={savedWorkerForm.name}
+                  onChange={(e) => {
+                    setSavedWorkerForm((prev) => ({ ...prev, name: e.target.value }));
+                    setSavedWorkerError(null);
+                    setSavedWorkerMessage(null);
+                  }}
+                  placeholder="Lead Tech"
+                />
+              </label>
+              <label>
+                Wage/Hour
+                <input
+                  value={savedWorkerForm.wage_per_hour}
+                  onChange={(e) => {
+                    setSavedWorkerForm((prev) => ({ ...prev, wage_per_hour: e.target.value }));
+                    setSavedWorkerError(null);
+                    setSavedWorkerMessage(null);
+                  }}
+                  placeholder="45"
+                />
+              </label>
+              <label>
+                Hours
+                <input
+                  value={savedWorkerForm.hours}
+                  onChange={(e) => {
+                    setSavedWorkerForm((prev) => ({ ...prev, hours: e.target.value }));
+                    setSavedWorkerError(null);
+                    setSavedWorkerMessage(null);
+                  }}
+                  placeholder="8"
+                />
+              </label>
+            </div>
+            <div className="settings-editor-actions">
+              <button className="nav-item compact" type="button" onClick={saveSavedWorker}>
+                {savedWorkerEditorMode === "create" ? "Create Worker" : "Save Worker"}
+              </button>
+              {savedWorkerEditorMode === "edit" ? (
+                <button className="nav-item compact" type="button" onClick={deleteSavedWorker}>
+                  Delete Worker
+                </button>
+              ) : null}
+              <button className="nav-item compact" type="button" onClick={closeSavedWorkerEditor}>
+                Close
+              </button>
+            </div>
+          </div>
+        ) : (
+          <p className="settings-editor-empty">Click Create Worker or Edit Worker to open this editor.</p>
+        )}
+      </article>
+        </>
+      )}
     </section>
   );
 }
@@ -3859,6 +5640,7 @@ function App() {
   const [startupState, setStartupState] = useState<"checking" | "ready" | "error">("checking");
   const [startupMessage, setStartupMessage] = useState<string>("Checking backend readiness...");
   const [activeView, setActiveView] = useState<NavKey>("dashboard");
+  const [jobFilesFocusId, setJobFilesFocusId] = useState<number | null>(null);
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [authNotice, setAuthNotice] = useState<string | null>(null);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
@@ -3926,6 +5708,7 @@ function App() {
     writeAuthSessionToStorage(buildAuthSession(user));
     lastActivityPersistAtRef.current = Date.now();
     setActiveView("dashboard");
+    setJobFilesFocusId(null);
   };
 
   const handleLogout = (notice?: string) => {
@@ -3936,6 +5719,12 @@ function App() {
     setAuthUser(null);
     clearAuthSessionFromStorage();
     setAuthNotice(notice ?? null);
+    setJobFilesFocusId(null);
+  };
+
+  const openJobFilesForJob = (jobId: number) => {
+    setJobFilesFocusId(jobId);
+    setActiveView("jobfiles");
   };
 
   useEffect(() => {
@@ -4096,10 +5885,14 @@ function App() {
             onClick={() => setIsSidebarCollapsed((prev) => !prev)}
             aria-label={isSidebarCollapsed ? "Expand navigation sidebar" : "Collapse navigation sidebar"}
           >
-            {isSidebarCollapsed ? ">" : "<"}
+            <span className="sidebar-toggle-lines" aria-hidden="true">
+              <span />
+              <span />
+              <span />
+            </span>
           </button>
         </div>
-        <nav>
+        <nav className="sidebar-nav">
           {navItems.map((item) => (
             <button
               key={item.key}
@@ -4112,18 +5905,29 @@ function App() {
               <span className="nav-label">{item.label}</span>
             </button>
           ))}
+          <div className="sidebar-nav-spacer" />
+          <button
+            className={`nav-item${activeView === settingsNavItem.key ? " active" : ""}`}
+            onClick={() => setActiveView(settingsNavItem.key)}
+            title={isSidebarCollapsed ? settingsNavItem.label : undefined}
+            type="button"
+          >
+            <span className="nav-icon" aria-hidden="true">{settingsNavItem.icon}</span>
+            <span className="nav-label">{settingsNavItem.label}</span>
+          </button>
         </nav>
       </aside>
       <main className="content">
         <header className="topbar">
-          <div className="status-pill">User: {authUser.username}</div>
-          <button className="nav-item compact" type="button" onClick={() => handleLogout()}>Logout</button>
-          <div className="status-pill">API: {healthLabel}</div>
+          <button className="nav-item compact logout-button" type="button" onClick={() => handleLogout()}>
+            Logout
+          </button>
         </header>
 
         {activeView === "dashboard" ? <DashboardView onNavigate={setActiveView} userId={authUser.user_id} /> : null}
-        {activeView === "bidding" ? <BiddingView userId={authUser.user_id} /> : null}
-        {activeView === "jobs" ? <JobsView userId={authUser.user_id} username={authUser.username} /> : null}
+        {activeView === "bidding" ? <BiddingView userId={authUser.user_id} onOpenJobs={() => setActiveView("jobs")} /> : null}
+        {activeView === "jobs" ? <JobsView userId={authUser.user_id} onOpenJobFiles={openJobFilesForJob} /> : null}
+        {activeView === "jobfiles" ? <JobFilesView userId={authUser.user_id} initialJobId={jobFilesFocusId} /> : null}
         {activeView === "calendar" ? <CalendarView userId={authUser.user_id} /> : null}
         {activeView === "reports" ? (
           <PlaceholderView
@@ -4131,6 +5935,7 @@ function App() {
             message="Next step: port revenue/profit reporting and export workflow."
           />
         ) : null}
+        {activeView === "settings" ? <SettingsView userId={authUser.user_id} username={authUser.username} /> : null}
       </main>
     </div>
   );

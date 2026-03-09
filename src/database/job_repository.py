@@ -695,6 +695,64 @@ class JobRepository:
             created_at=row[21],
             updated_at=row[22]
         )
+
+    def get_job_financials_bulk(self, job_ids: List[int]) -> Dict[int, JobFinancials]:
+        """
+        Get financial data for multiple jobs in one query.
+
+        Args:
+            job_ids: List of job IDs.
+
+        Returns:
+            Mapping of job_id -> JobFinancials for rows that exist.
+        """
+        normalized_ids = sorted({int(job_id) for job_id in job_ids if int(job_id) > 0})
+        if not normalized_ids:
+            return {}
+
+        placeholders = ", ".join(["?"] * len(normalized_ids))
+        sql = f"""
+        SELECT 
+            financial_id, job_id, bid_amount, estimated_materials,
+            estimated_labor_hours, estimated_labor_cost, actual_materials_cost,
+            actual_labor_hours, actual_labor_cost, overhead_cost, tools_rental_cost,
+            shipping_cost, tax_amount, commission_amount, other_costs,
+            payment_status, amount_paid, payment_date, total_costs, net_profit,
+            profit_margin_pct, created_at, updated_at
+        FROM JobFinancials
+        WHERE job_id IN ({placeholders});
+        """
+
+        rows = self.db.fetchall(sql, tuple(normalized_ids))
+        payload: Dict[int, JobFinancials] = {}
+        for row in rows:
+            item = JobFinancials(
+                financial_id=row[0],
+                job_id=row[1],
+                bid_amount=row[2],
+                estimated_materials=row[3],
+                estimated_labor_hours=row[4],
+                estimated_labor_cost=row[5],
+                actual_materials_cost=row[6],
+                actual_labor_hours=row[7],
+                actual_labor_cost=row[8],
+                overhead_cost=row[9],
+                tools_rental_cost=row[10],
+                shipping_cost=row[11],
+                tax_amount=row[12],
+                commission_amount=row[13],
+                other_costs=row[14],
+                payment_status=row[15],
+                amount_paid=row[16],
+                payment_date=row[17],
+                total_costs=row[18],
+                net_profit=row[19],
+                profit_margin_pct=row[20],
+                created_at=row[21],
+                updated_at=row[22],
+            )
+            payload[int(item.job_id)] = item
+        return payload
     
     # ========================================================================
     # HELPER METHODS

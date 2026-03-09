@@ -1,6 +1,7 @@
 import {
   AuthLogoutResponse,
   AuthUser,
+  BidConfirmResponse,
   BidPreviewBase64Request,
   BidPreviewRequest,
   BidPreviewResponse,
@@ -10,6 +11,9 @@ import {
   DashboardSummaryResponse,
   HealthReadinessResponse,
   HealthResponse,
+  JobAssetDetailResponse,
+  JobExportCleanupResponse,
+  JobAssetsIndexResponse,
   LoginRequest,
   JobApproveRequest,
   JobApproveResponse,
@@ -202,6 +206,13 @@ export function previewBid(payload: BidPreviewRequest): Promise<BidPreviewRespon
   });
 }
 
+export function confirmBid(payload: BidPreviewRequest): Promise<BidConfirmResponse> {
+  return request<BidConfirmResponse>("/api/v1/bids/confirm", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
 export function exportBidExcel(payload: BidPreviewRequest): Promise<Blob> {
   return requestBlob("/api/v1/bids/export/excel", {
     method: "POST",
@@ -291,6 +302,13 @@ export function previewBidUpload(
   return previewBidBase64(file, payload);
 }
 
+export function confirmBidUpload(
+  file: File,
+  payload: BidPreviewUploadRequest,
+): Promise<BidConfirmResponse> {
+  return confirmBidBase64(file, payload);
+}
+
 async function previewBidBase64(
   file: File,
   payload: BidPreviewUploadRequest,
@@ -346,6 +364,45 @@ async function previewBidBase64(
 
   throw new Error(
     "Pricing upload route not found on running API. Restart the desktop app to load the latest API.",
+  );
+}
+
+async function confirmBidBase64(
+  file: File,
+  payload: BidPreviewUploadRequest,
+): Promise<BidConfirmResponse> {
+  const base64Payload: BidPreviewBase64Request = {
+    file_name: file.name,
+    pricing_file_base64: await fileToBase64(file),
+    pricing_sheet: payload.pricing_sheet,
+    compliance_code: payload.compliance_code || "DUAL",
+    project_data: payload.project_data || {},
+    workers: payload.workers || [],
+  };
+  try {
+    return await request<BidConfirmResponse>("/api/v1/bids/confirm/base64", {
+      method: "POST",
+      body: JSON.stringify(base64Payload),
+    });
+  } catch (base64Err) {
+    if (!isNotFoundError(base64Err)) {
+      throw base64Err;
+    }
+  }
+
+  const nativePath = getNativeFilePath(file);
+  if (nativePath) {
+    return confirmBid({
+      pricing_file_path: nativePath,
+      pricing_sheet: payload.pricing_sheet,
+      compliance_code: payload.compliance_code,
+      project_data: payload.project_data,
+      workers: payload.workers,
+    });
+  }
+
+  throw new Error(
+    "Bid confirm route not found on running API. Restart the desktop app to load the latest API.",
   );
 }
 
@@ -447,6 +504,34 @@ export function approveJob(jobId: number, payload: JobApproveRequest): Promise<J
   return request<JobApproveResponse>(`/api/v1/jobs/${jobId}/approve`, {
     method: "POST",
     body: JSON.stringify(payload),
+  });
+}
+
+export function getJobAssetsIndex(): Promise<JobAssetsIndexResponse> {
+  return request<JobAssetsIndexResponse>("/api/v1/jobs/assets");
+}
+
+export function getJobAssetDetail(jobId: number): Promise<JobAssetDetailResponse> {
+  return request<JobAssetDetailResponse>(`/api/v1/jobs/${jobId}/assets`);
+}
+
+export function downloadJobExcel(jobId: number): Promise<Blob> {
+  return requestBlob(`/api/v1/jobs/${jobId}/export/excel`);
+}
+
+export function downloadJobPdf(jobId: number): Promise<Blob> {
+  return requestBlob(`/api/v1/jobs/${jobId}/export/pdf`);
+}
+
+export function downloadJobHistoricalExport(jobId: number, exportId: number): Promise<Blob> {
+  return requestBlob(`/api/v1/jobs/${jobId}/exports/${exportId}/download`);
+}
+
+export function cleanupJobExports(jobId: number, olderThanDays: number): Promise<JobExportCleanupResponse> {
+  const search = new URLSearchParams();
+  search.set("older_than_days", String(olderThanDays));
+  return request<JobExportCleanupResponse>(`/api/v1/jobs/${jobId}/exports/cleanup?${search.toString()}`, {
+    method: "POST",
   });
 }
 

@@ -45,7 +45,11 @@ def _job_to_item(job: Job) -> Dict[str, Any]:
         "status_display": job.status_display,
         "bid_amount": float(job.bid_amount or 0.0),
         "scheduled_date": job.scheduled_date,
+        "start_date": job.start_date,
         "completion_date": job.completion_date,
+        "invoice_number": job.invoice_number,
+        "invoice_date": job.invoice_date,
+        "assigned_crew": job.crew_list,
     }
 
 
@@ -55,8 +59,14 @@ def get_dashboard_summary(user_id: int) -> Dict[str, Any]:
 
     all_jobs = repo.get_all_jobs(user_id)
 
+    status_counts: Dict[str, int] = {}
+    for job in all_jobs:
+        status_counts[job.status] = status_counts.get(job.status, 0) + 1
+
     active_jobs = [j for j in all_jobs if j.status in ACTIVE_STATUSES]
     completed_jobs = [j for j in all_jobs if j.status in COMPLETED_STATUSES]
+    completed_job_ids = [int(j.job_id) for j in completed_jobs if j.job_id]
+    financials_by_job_id = repo.get_job_financials_bulk(completed_job_ids)
 
     total_revenue = sum(float(j.bid_amount or 0.0) for j in completed_jobs)
     total_profit = 0.0
@@ -64,7 +74,7 @@ def get_dashboard_summary(user_id: int) -> Dict[str, Any]:
     for job in completed_jobs:
         if not job.job_id:
             continue
-        financials = repo.get_job_financials(job.job_id)
+        financials = financials_by_job_id.get(int(job.job_id))
         if not financials:
             continue
         if financials.net_profit is not None:
@@ -99,12 +109,27 @@ def get_dashboard_summary(user_id: int) -> Dict[str, Any]:
         if scheduled_date == today and job.status in {"scheduled", "in_progress"}:
             todays_jobs.append(job)
 
-        if completion_date and completion_date < today and job.status not in COMPLETED_STATUSES:
+        # Determine overdue against the best available lifecycle date for active jobs.
+        # completion_date is only required when moving to "completed", so relying on it
+        # alone misses most overdue active work.
+        baseline_date: Optional[date]
+        if job.status == "scheduled":
+            baseline_date = scheduled_date
+        elif job.status in {"in_progress", "inspection"}:
+            baseline_date = _parse_date(job.start_date) or scheduled_date
+        else:
+            baseline_date = completion_date or _parse_date(job.start_date) or scheduled_date
+
+        if baseline_date and baseline_date < today and job.status not in COMPLETED_STATUSES:
             overdue_jobs.append(job)
             continue
 
         if scheduled_date and today < scheduled_date <= upcoming_cutoff:
             upcoming_jobs.append(job)
+
+    overdue_jobs.sort(
+        key=lambda j: _parse_date(j.scheduled_date) or _parse_date(j.start_date) or date.min
+    )
 
     recent_jobs = sorted(
         all_jobs,
@@ -117,6 +142,8 @@ def get_dashboard_summary(user_id: int) -> Dict[str, Any]:
         "metrics": {
             "active_jobs": len(active_jobs),
             "completed_jobs": len(completed_jobs),
+            "awaiting_approval_jobs": status_counts.get("awaiting_approval", 0),
+            "completed_not_invoiced_jobs": status_counts.get("completed", 0),
             "total_revenue": round(total_revenue, 2),
             "total_profit": round(total_profit, 2),
             "profit_margin_pct": round(profit_margin, 2),

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+from pathlib import Path
 
 from src.database.db_connector import DBConnector
 from src.models.bid import Bid, BidLineItem, BidSection
@@ -101,7 +102,14 @@ class BidRepository:
         )
         return cur.lastrowid
     
-    def create_bid(self, user_id: int, project_id: int, bid: Bid, workers: List[Dict[str, Any]]) -> int:
+    def create_bid(
+        self,
+        user_id: int,
+        project_id: int,
+        bid: Bid,
+        workers: List[Dict[str, Any]],
+        compliance_code: str = "DUAL",
+    ) -> int:
         timestamp = datetime.utcnow().isoformat()
         cur = self.db.execute(
             """
@@ -114,10 +122,10 @@ class BidRepository:
                 user_id,
                 project_id,
                 timestamp,
-                "DUAL",
+                compliance_code,
                 bid.subtotal,
                 bid.total_with_markup,
-                bid.final_bid_amount,
+                bid.adjusted_final_bid_amount,
                 bid.subtotal_material,
                 bid.subtotal_labor,
             )
@@ -231,7 +239,7 @@ class BidRepository:
     
     def load_bid(self, bid_id: int) -> Optional[Dict[str, Any]]:
         bid_row = self.db.fetchone(
-            "SELECT project_id, subtotal, total_with_markup, final_amount FROM Bids WHERE bid_id = ?;",
+            "SELECT project_id, compliance_code, subtotal, total_with_markup, final_amount FROM Bids WHERE bid_id = ?;",
             (bid_id,)
         )
         if not bid_row:
@@ -335,15 +343,73 @@ class BidRepository:
             "project_data": project_data,
             "settings": settings,
             "workers": workers,
+            "compliance_code": bid_row[1],
             "bid": bid_obj,
         }
     
     def save_export(self, bid_id: int, export_type: str, file_path: str):
         timestamp = datetime.utcnow().isoformat()
-        self.db.execute(
+        cur = self.db.execute(
             "INSERT INTO Exports (bid_id, export_type, file_path, created_at) VALUES (?, ?, ?, ?);",
             (bid_id, export_type, file_path, timestamp)
         )
+        return int(cur.lastrowid)
+
+    def list_exports(self, bid_id: int, limit: int = 100) -> List[Dict[str, Any]]:
+        rows = self.db.fetchall(
+            """
+            SELECT export_id, bid_id, export_type, file_path, created_at
+            FROM Exports
+            WHERE bid_id = ?
+            ORDER BY created_at DESC
+            LIMIT ?;
+            """,
+            (bid_id, limit),
+        )
+        payload: List[Dict[str, Any]] = []
+        for row in rows:
+            file_path = str(row[3] or "")
+            payload.append(
+                {
+                    "export_id": int(row[0]),
+                    "bid_id": int(row[1]),
+                    "export_type": str(row[2] or ""),
+                    "file_path": file_path,
+                    "file_name": Path(file_path).name if file_path else "",
+                    "created_at": str(row[4] or ""),
+                }
+            )
+        return payload
+
+    def get_export(self, export_id: int) -> Optional[Dict[str, Any]]:
+        row = self.db.fetchone(
+            """
+            SELECT export_id, bid_id, export_type, file_path, created_at
+            FROM Exports
+            WHERE export_id = ?;
+            """,
+            (export_id,),
+        )
+        if not row:
+            return None
+        file_path = str(row[3] or "")
+        return {
+            "export_id": int(row[0]),
+            "bid_id": int(row[1]),
+            "export_type": str(row[2] or ""),
+            "file_path": file_path,
+            "file_name": Path(file_path).name if file_path else "",
+            "created_at": str(row[4] or ""),
+        }
+
+    def delete_exports_by_ids(self, export_ids: List[int]) -> int:
+        normalized_ids = sorted({int(export_id) for export_id in export_ids if int(export_id) > 0})
+        if not normalized_ids:
+            return 0
+        placeholders = ", ".join(["?"] * len(normalized_ids))
+        sql = f"DELETE FROM Exports WHERE export_id IN ({placeholders});"
+        cur = self.db.execute(sql, tuple(normalized_ids))
+        return int(cur.rowcount or 0)
     
     def save_autosave(self, user_id: int, payload: Dict[str, Any]):
         timestamp = datetime.utcnow().isoformat()
