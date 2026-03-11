@@ -1258,6 +1258,12 @@ body {
   gap: 6px;
 }
 
+.calendar-job-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
 .calendar-job-card.status-awaiting_approval {
   border-left-color: #d97706;
 }
@@ -1328,6 +1334,120 @@ body {
   display: grid;
   gap: 10px;
   margin-top: 10px;
+}
+
+.reports-shell {
+  margin-top: 16px;
+}
+
+.reports-header-panel {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.reports-header-actions {
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+}
+
+.reports-last-refresh {
+  margin: 0;
+  font-size: 12px;
+  color: #45617e;
+}
+
+.reports-kpi-grid {
+  margin-top: 0;
+}
+
+.reports-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(260px, 1fr));
+  gap: 16px;
+}
+
+.reports-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.reports-panel-wide {
+  grid-column: 1 / -1;
+}
+
+.reports-mini-kpis {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.reports-mini-kpi {
+  border: 1px solid #c8d8ec;
+  border-radius: 10px;
+  background: #f7fbff;
+  padding: 8px 10px;
+  display: grid;
+  gap: 4px;
+}
+
+.reports-mini-kpi span {
+  font-size: 12px;
+  color: #4b6784;
+}
+
+.reports-mini-kpi strong {
+  font-size: 16px;
+  color: #102f4d;
+}
+
+.reports-note {
+  margin: 0;
+  font-size: 13px;
+  color: #2f4b68;
+}
+
+.reports-table-wrap {
+  border: 1px solid #c8d8ec;
+  border-radius: 10px;
+  overflow: auto;
+  background: #fff;
+}
+
+.reports-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 540px;
+}
+
+.reports-table th,
+.reports-table td {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid #e2ecf7;
+  font-size: 13px;
+  color: #1f3d5e;
+}
+
+.reports-table th {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: #345473;
+  background: #edf4fd;
+}
+
+.reports-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.reports-export-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(220px, 1fr));
+  gap: 8px;
 }
 
 .form-grid {
@@ -1949,6 +2069,10 @@ body {
     grid-template-columns: repeat(2, minmax(220px, 1fr));
   }
 
+  .reports-grid {
+    grid-template-columns: 1fr;
+  }
+
   .job-files-layout {
     grid-template-columns: 1fr;
   }
@@ -2057,6 +2181,26 @@ body {
 
   .jobs-board-grid {
     grid-template-columns: 1fr;
+  }
+
+  .reports-header-panel {
+    flex-direction: column;
+  }
+
+  .reports-header-actions {
+    width: 100%;
+  }
+
+  .reports-mini-kpis {
+    grid-template-columns: 1fr;
+  }
+
+  .reports-export-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .reports-table {
+    min-width: 460px;
   }
 
   .calendar-nav-row {

@@ -117,7 +117,7 @@ class ExcelBidExporter:
             current_row += 1  # Blank row between sections
 
         # Column widths
-        ws.column_dimensions['A'].width = 20
+        ws.column_dimensions['A'].width = 28
         ws.column_dimensions['B'].width = 12
         ws.column_dimensions['C'].width = 35
         ws.column_dimensions['D'].width = 12
@@ -174,7 +174,7 @@ class ExcelBidExporter:
             cell.fill = self.section_fill
 
         # Column widths
-        ws.column_dimensions['A'].width = 30
+        ws.column_dimensions['A'].width = 40
         ws.column_dimensions['B'].width = 15
         ws.column_dimensions['C'].width = 15
         ws.column_dimensions['D'].width = 15
@@ -441,7 +441,19 @@ class ExcelBidExporter:
                 row += 1
 
         # Column widths
-        ws.column_dimensions['A'].width = 30
+        ws.column_dimensions['A'].width = 54
         ws.column_dimensions['B'].width = 20
         ws.column_dimensions['C'].width = 12
         ws.column_dimensions['D'].width = 15
+
+        # Keep long labels in column A readable even when adjacent value columns are populated.
+        for data_row in range(1, row + 1):
+            label_cell = ws.cell(row=data_row, column=1)
+            if label_cell.value is None:
+                continue
+            prior_alignment = label_cell.alignment
+            label_cell.alignment = Alignment(
+                horizontal=prior_alignment.horizontal or 'left',
+                vertical=prior_alignment.vertical or 'center',
+                wrap_text=True,
+            )

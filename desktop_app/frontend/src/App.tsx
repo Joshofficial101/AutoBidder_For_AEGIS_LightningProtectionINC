@@ -229,7 +229,7 @@ const navItems: Array<{ key: NavKey; label: string; icon: string }> = [
   { key: "jobs", label: "Jobs", icon: "JB" },
   { key: "jobfiles", label: "Job Files", icon: "JF" },
   { key: "calendar", label: "Calendar", icon: "CL" },
-  { key: "reports", label: "Reports", icon: "RP" },
+  { key: "reports", label: "Reports & Insights", icon: "RP" },
 ];
 const settingsNavItem = { key: "settings" as const, label: "Settings", icon: "ST" };
 
@@ -501,6 +501,38 @@ function downloadBlob(filename: string, blob: Blob): void {
   URL.revokeObjectURL(url);
 }
 
+function encodeCsvCell(value: unknown): string {
+  if (value === null || value === undefined) {
+    return "";
+  }
+  const text = String(value);
+  if (/["\r\n,]/.test(text)) {
+    return `"${text.replace(/"/g, "\"\"")}"`;
+  }
+  return text;
+}
+
+async function saveCsvWithDialog(
+  filename: string,
+  headers: string[],
+  rows: Array<Array<string | number | null | undefined>>,
+): Promise<SaveBlobResult> {
+  const lines: string[] = [headers.map((header) => encodeCsvCell(header)).join(",")];
+  for (const row of rows) {
+    lines.push(row.map((value) => encodeCsvCell(value)).join(","));
+  }
+  const csvText = `${lines.join("\r\n")}\r\n`;
+  return saveBlobWithDialog(
+    filename,
+    new Blob([csvText], { type: "text/csv;charset=utf-8;" }),
+    {
+      description: "CSV File",
+      mimeType: "text/csv",
+      extensions: [".csv"],
+    },
+  );
+}
+
 type SavePickerTypeDescriptor = {
   description: string;
   mimeType: string;
@@ -527,6 +559,18 @@ type SavePickerHandle = {
 type SavePickerFunction = (options?: SavePickerOptions) => Promise<SavePickerHandle>;
 
 type SaveBlobResult = "picker" | "fallback";
+
+type SpreadsheetSheet = {
+  name: string;
+  headers: string[];
+  rows: Array<Array<string | number | null | undefined>>;
+};
+
+function normalizeSpreadsheetSheetName(value: string, index: number): string {
+  const cleaned = value.replace(/[\\/\[\]\*\?:]/g, " ").replace(/\s+/g, " ").trim();
+  const candidate = cleaned || `Sheet ${index + 1}`;
+  return candidate.slice(0, 31);
+}
 
 async function saveBlobWithDialog(
   filename: string,
@@ -3226,19 +3270,25 @@ function JobsView({
   >({});
   const [alertSettings, setAlertSettings] = useState<WorkflowAlertSettings>(() => readWorkflowAlertSettings(userId));
 
-  const getWorkflowInput = (jobId: number) =>
-    workflowInputs[jobId] ?? {
+  const formatCrewInput = (crew: string[]): string =>
+    crew
+      .map((member) => member.trim())
+      .filter((member) => member.length > 0)
+      .join(", ");
+
+  const getWorkflowInput = (job: DashboardJobItem) =>
+    workflowInputs[job.job_id] ?? {
       scheduled_date: "",
       start_date: "",
       completion_date: "",
       invoice_date: "",
       invoice_number: "",
-      assigned_crew: "",
+      assigned_crew: formatCrewInput(job.assigned_crew ?? []),
       note: "",
     };
 
   const setWorkflowInput = (
-    jobId: number,
+    job: DashboardJobItem,
     key:
       | "scheduled_date"
       | "start_date"
@@ -3251,8 +3301,8 @@ function JobsView({
   ) => {
     setWorkflowInputs((prev) => ({
       ...prev,
-      [jobId]: {
-        ...getWorkflowInput(jobId),
+      [job.job_id]: {
+        ...getWorkflowInput(job),
         [key]: value,
       },
     }));
@@ -3304,7 +3354,7 @@ function JobsView({
   }, [userId]);
 
   const handleStatusAdvance = async (job: DashboardJobItem, nextStatus: JobBoardStatus) => {
-    const input = getWorkflowInput(job.job_id);
+    const input = getWorkflowInput(job);
     const note = input.note.trim();
     const crews = parseCrewCsv(input.assigned_crew);
     const payload: {
@@ -3384,7 +3434,7 @@ function JobsView({
   };
 
   const handleApproveAndSchedule = async (job: DashboardJobItem) => {
-    const input = getWorkflowInput(job.job_id);
+    const input = getWorkflowInput(job);
     const scheduledDate = input.scheduled_date.trim();
     const crews = parseCrewCsv(input.assigned_crew);
     const note = input.note.trim();
@@ -3475,7 +3525,7 @@ function JobsView({
                   <p className="jobs-empty">{column.emptyText}</p>
                 ) : (
                   jobs.map((job) => {
-                    const input = getWorkflowInput(job.job_id);
+                    const input = getWorkflowInput(job);
                     const workflowAlert = evaluateWorkflowAlert(job, alertSettings);
                     return (
                       <article
@@ -3522,21 +3572,21 @@ function JobsView({
                               className="jobs-date-input"
                               placeholder="Scheduled date (YYYY-MM-DD)"
                               value={input.scheduled_date}
-                              onChange={(e) => setWorkflowInput(job.job_id, "scheduled_date", e.target.value)}
+                              onChange={(e) => setWorkflowInput(job, "scheduled_date", e.target.value)}
                               disabled={updatingJobId === job.job_id}
                             />
                             <input
                               className="jobs-date-input"
                               placeholder="Assigned crew (comma-separated)"
                               value={input.assigned_crew}
-                              onChange={(e) => setWorkflowInput(job.job_id, "assigned_crew", e.target.value)}
+                              onChange={(e) => setWorkflowInput(job, "assigned_crew", e.target.value)}
                               disabled={updatingJobId === job.job_id}
                             />
                             <textarea
                               className="jobs-note-input"
                               placeholder="Approval note"
                               value={input.note}
-                              onChange={(e) => setWorkflowInput(job.job_id, "note", e.target.value)}
+                              onChange={(e) => setWorkflowInput(job, "note", e.target.value)}
                               disabled={updatingJobId === job.job_id}
                             />
                             <button
@@ -3558,14 +3608,14 @@ function JobsView({
                                   className="jobs-date-input"
                                   placeholder="Start date (YYYY-MM-DD)"
                                   value={input.start_date}
-                                  onChange={(e) => setWorkflowInput(job.job_id, "start_date", e.target.value)}
+                                  onChange={(e) => setWorkflowInput(job, "start_date", e.target.value)}
                                   disabled={updatingJobId === job.job_id}
                                 />
                                 <input
                                   className="jobs-date-input"
                                   placeholder="Assigned crew (comma-separated)"
                                   value={input.assigned_crew}
-                                  onChange={(e) => setWorkflowInput(job.job_id, "assigned_crew", e.target.value)}
+                                  onChange={(e) => setWorkflowInput(job, "assigned_crew", e.target.value)}
                                   disabled={updatingJobId === job.job_id}
                                 />
                               </>
@@ -3576,7 +3626,7 @@ function JobsView({
                                 className="jobs-date-input"
                                 placeholder="Completion date (YYYY-MM-DD)"
                                 value={input.completion_date}
-                                onChange={(e) => setWorkflowInput(job.job_id, "completion_date", e.target.value)}
+                                onChange={(e) => setWorkflowInput(job, "completion_date", e.target.value)}
                                 disabled={updatingJobId === job.job_id}
                               />
                             ) : null}
@@ -3587,14 +3637,14 @@ function JobsView({
                                   className="jobs-date-input"
                                   placeholder="Invoice date (YYYY-MM-DD)"
                                   value={input.invoice_date}
-                                  onChange={(e) => setWorkflowInput(job.job_id, "invoice_date", e.target.value)}
+                                  onChange={(e) => setWorkflowInput(job, "invoice_date", e.target.value)}
                                   disabled={updatingJobId === job.job_id}
                                 />
                                 <input
                                   className="jobs-date-input"
                                   placeholder="Invoice number"
                                   value={input.invoice_number}
-                                  onChange={(e) => setWorkflowInput(job.job_id, "invoice_number", e.target.value)}
+                                  onChange={(e) => setWorkflowInput(job, "invoice_number", e.target.value)}
                                   disabled={updatingJobId === job.job_id}
                                 />
                               </>
@@ -3604,7 +3654,7 @@ function JobsView({
                               className="jobs-note-input"
                               placeholder="Transition note"
                               value={input.note}
-                              onChange={(e) => setWorkflowInput(job.job_id, "note", e.target.value)}
+                              onChange={(e) => setWorkflowInput(job, "note", e.target.value)}
                               disabled={updatingJobId === job.job_id}
                             />
                             <button
@@ -5288,7 +5338,15 @@ function SettingsView({ userId, username }: { userId: number; username: string }
   );
 }
 
-function CalendarView({ userId }: { userId: number }) {
+function CalendarView({
+  userId,
+  onNavigate,
+  onOpenJobFiles,
+}: {
+  userId: number;
+  onNavigate: (view: NavKey) => void;
+  onOpenJobFiles: (jobId: number) => void;
+}) {
   const [viewMode, setViewMode] = useState<CalendarViewMode>("month");
   const [currentDate, setCurrentDate] = useState<Date>(new Date());
   const [selectedDate, setSelectedDate] = useState<string>(toIsoDate(new Date()));
@@ -5298,6 +5356,8 @@ function CalendarView({ userId }: { userId: number }) {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [jobActionBusy, setJobActionBusy] = useState<string | null>(null);
+  const [jobActionNotice, setJobActionNotice] = useState<{ type: "success" | "error"; message: string } | null>(null);
   const [alertSettings, setAlertSettings] = useState<WorkflowAlertSettings>(() => readWorkflowAlertSettings(userId));
 
   const currentDateKey = toIsoDate(currentDate);
@@ -5372,8 +5432,37 @@ function CalendarView({ userId }: { userId: number }) {
 
   const selectedJobs = jobsByDate.get(selectedDate) ?? [];
 
+  const exportNameForJob = (job: CalendarJobItem, extension: "pdf" | "xlsx"): string => {
+    const safeName = sanitizeFileName(job.project_name || `job_${job.job_id}`).replace(/_+/g, "_");
+    return `${safeName || `job_${job.job_id}`}_${job.job_id}.${extension}`;
+  };
+
+  const handleCalendarJobDownload = async (job: CalendarJobItem, kind: "pdf" | "excel") => {
+    const busyKey = `${kind}-${job.job_id}`;
+    try {
+      setJobActionBusy(busyKey);
+      setJobActionNotice(null);
+      const blob = kind === "pdf" ? await downloadJobPdf(job.job_id) : await downloadJobExcel(job.job_id);
+      downloadBlob(exportNameForJob(job, kind === "pdf" ? "pdf" : "xlsx"), blob);
+      setJobActionNotice({
+        type: "success",
+        message: `${kind === "pdf" ? "PDF" : "Excel"} downloaded for job #${job.job_id}.`,
+      });
+    } catch (err) {
+      setJobActionNotice({
+        type: "error",
+        message: err instanceof Error ? err.message : `Failed to download ${kind.toUpperCase()} for job #${job.job_id}.`,
+      });
+    } finally {
+      setJobActionBusy(null);
+    }
+  };
+
   const renderJobCard = (job: CalendarJobItem) => {
     const workflowAlert = evaluateWorkflowAlert(job, alertSettings);
+    const pdfBusy = jobActionBusy === `pdf-${job.job_id}`;
+    const excelBusy = jobActionBusy === `excel-${job.job_id}`;
+    const anyBusy = pdfBusy || excelBusy;
     return (
       <article
         key={`${job.job_id}-${job.status}`}
@@ -5395,6 +5484,30 @@ function CalendarView({ userId }: { userId: number }) {
         {job.assigned_crew.length > 0 ? (
           <p className="calendar-job-crew">Crew: {job.assigned_crew.join(", ")}</p>
         ) : null}
+        <div className="calendar-job-actions">
+          <button className="nav-item compact" type="button" onClick={() => onOpenJobFiles(job.job_id)} disabled={anyBusy}>
+            Open Job Files
+          </button>
+          <button className="nav-item compact" type="button" onClick={() => onNavigate("jobs")} disabled={anyBusy}>
+            Open Jobs Board
+          </button>
+          <button
+            className="nav-item compact"
+            type="button"
+            onClick={() => void handleCalendarJobDownload(job, "pdf")}
+            disabled={anyBusy}
+          >
+            {pdfBusy ? "Downloading PDF..." : "Download PDF"}
+          </button>
+          <button
+            className="nav-item compact"
+            type="button"
+            onClick={() => void handleCalendarJobDownload(job, "excel")}
+            disabled={anyBusy}
+          >
+            {excelBusy ? "Downloading Excel..." : "Download Excel"}
+          </button>
+        </div>
       </article>
     );
   };
@@ -5590,6 +5703,11 @@ function CalendarView({ userId }: { userId: number }) {
       </article>
 
       {error ? <article className="panel error-panel"><p>{error}</p></article> : null}
+      {jobActionNotice ? (
+        <article className={`panel export-notice ${jobActionNotice.type}`}>
+          <p>{jobActionNotice.message}</p>
+        </article>
+      ) : null}
 
       <article className="panel calendar-main-panel">
         {viewMode === "month" ? renderMonthView() : null}
@@ -5605,6 +5723,775 @@ function CalendarView({ userId }: { userId: number }) {
           <p>No jobs mapped to this date.</p>
         )}
       </article>
+    </section>
+  );
+}
+
+function ReportsInsightsView({ userId, onNavigate }: { userId: number; onNavigate: (view: NavKey) => void }) {
+  const [summary, setSummary] = useState<DashboardSummaryResponse | null>(null);
+  const [board, setBoard] = useState<JobsBoardResponse | null>(null);
+  const [calendarData, setCalendarData] = useState<CalendarJobsResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [csvExportNotice, setCsvExportNotice] = useState<{ type: "success" | "error"; message: string } | null>(null);
+  const [lastRefreshedAt, setLastRefreshedAt] = useState<string>("");
+
+  const loadReports = async (refreshOnly: boolean) => {
+    try {
+      if (refreshOnly) {
+        setRefreshing(true);
+      } else {
+        setLoading(true);
+      }
+      setError(null);
+      const today = new Date();
+      const startDate = toIsoDate(today);
+      const endDate = toIsoDate(addDays(today, 30));
+      const [summaryPayload, boardPayload, calendarPayload] = await Promise.all([
+        getDashboardSummary(),
+        getJobsBoard(),
+        getCalendarJobs({
+          start_date: startDate,
+          end_date: endDate,
+        }),
+      ]);
+      setSummary(summaryPayload);
+      setBoard(boardPayload);
+      setCalendarData(calendarPayload);
+      setLastRefreshedAt(new Date().toLocaleTimeString());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load reports");
+    } finally {
+      if (refreshOnly) {
+        setRefreshing(false);
+      } else {
+        setLoading(false);
+      }
+    }
+  };
+
+  useEffect(() => {
+    void loadReports(false);
+  }, [userId]);
+
+  if (loading && (!summary || !board || !calendarData)) {
+    return <section className="panel"><p>Loading reports...</p></section>;
+  }
+
+  if (!summary || !board || !calendarData) {
+    return (
+      <section className="panel">
+        <h2>Reports & Insights Error</h2>
+        <p>{error ?? "No report data available."}</p>
+        <button className="nav-item" onClick={() => void loadReports(false)} type="button">
+          Retry
+        </button>
+      </section>
+    );
+  }
+
+  const totalValue = (jobs: DashboardJobItem[]): number =>
+    jobs.reduce((sum, job) => sum + (Number.isFinite(job.bid_amount) ? job.bid_amount : 0), 0);
+  const average = (values: number[]): number | null =>
+    values.length > 0 ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
+  const normalizeCrew = (members?: string[]): string[] =>
+    (members ?? []).map((member) => member.trim()).filter((member) => member.length > 0);
+
+  const statusRows: Array<{
+    key: JobBoardStatus;
+    label: string;
+    jobs: DashboardJobItem[];
+  }> = [
+    { key: "awaiting_approval", label: "Awaiting Approval", jobs: board.awaiting_approval },
+    { key: "scheduled", label: "Scheduled", jobs: board.scheduled },
+    { key: "in_progress", label: "In Progress", jobs: board.in_progress },
+    { key: "inspection", label: "Inspection", jobs: board.inspection },
+    { key: "completed", label: "Completed", jobs: board.completed },
+    { key: "invoiced", label: "Invoiced", jobs: board.invoiced },
+  ];
+  const allJobs = statusRows.flatMap((row) => row.jobs);
+  const now = new Date();
+
+  const averageStageDays = (status: JobBoardStatus, jobs: DashboardJobItem[]): number | null => {
+    const stageDays: number[] = [];
+    for (const job of jobs) {
+      const baseDate =
+        status === "invoiced"
+          ? normalizeJobDate(job.invoice_date)
+          : status === "awaiting_approval"
+            ? normalizeJobDate(job.scheduled_date)
+            : workflowAlertBaseDate(job);
+      if (!baseDate) {
+        continue;
+      }
+      stageDays.push(daysBetween(fromIsoDate(baseDate), now));
+    }
+    return average(stageDays);
+  };
+
+  const pipelineRows = statusRows.map((row) => {
+    const statusTotal = totalValue(row.jobs);
+    const avgBid = row.jobs.length > 0 ? statusTotal / row.jobs.length : 0;
+    return {
+      ...row,
+      count: row.jobs.length,
+      total: statusTotal,
+      avgBid,
+      avgStageDays: averageStageDays(row.key, row.jobs),
+    };
+  });
+
+  const approvedJobs = allJobs.filter((job) => job.status !== "awaiting_approval");
+  const approvalRate = allJobs.length > 0 ? (approvedJobs.length / allJobs.length) * 100 : 0;
+  const avgBidAmount = allJobs.length > 0 ? totalValue(allJobs) / allJobs.length : 0;
+  const scheduledCoverage =
+    approvedJobs.length > 0
+      ? (approvedJobs.filter((job) => Boolean(normalizeJobDate(job.scheduled_date))).length / approvedJobs.length) * 100
+      : 0;
+
+  type CrewUtilizationRow = {
+    crew: string;
+    assignedJobs: number;
+    assignedValue: number;
+    upcomingJobs: number;
+    nextDate: string | null;
+  };
+  const crewMap = new Map<string, CrewUtilizationRow>();
+  const ensureCrewRow = (crew: string): CrewUtilizationRow => {
+    const existing = crewMap.get(crew);
+    if (existing) {
+      return existing;
+    }
+    const next: CrewUtilizationRow = {
+      crew,
+      assignedJobs: 0,
+      assignedValue: 0,
+      upcomingJobs: 0,
+      nextDate: null,
+    };
+    crewMap.set(crew, next);
+    return next;
+  };
+
+  const crewPoolJobs = [
+    ...board.awaiting_approval,
+    ...board.scheduled,
+    ...board.in_progress,
+    ...board.inspection,
+    ...board.completed,
+  ];
+  for (const job of crewPoolJobs) {
+    const members = Array.from(new Set(normalizeCrew(job.assigned_crew)));
+    for (const member of members) {
+      const row = ensureCrewRow(member);
+      row.assignedJobs += 1;
+      row.assignedValue += job.bid_amount || 0;
+    }
+  }
+
+  for (const crewName of calendarData.available_crews) {
+    const normalized = crewName.trim();
+    if (normalized) {
+      ensureCrewRow(normalized);
+    }
+  }
+
+  const calendarAnchor = (job: CalendarJobItem): string | null =>
+    normalizeJobDate(job.scheduled_date) ??
+    normalizeJobDate(job.start_date) ??
+    normalizeJobDate(job.completion_date);
+
+  for (const job of calendarData.jobs) {
+    const members = Array.from(new Set(normalizeCrew(job.assigned_crew)));
+    const anchorDate = calendarAnchor(job);
+    for (const member of members) {
+      const row = ensureCrewRow(member);
+      row.upcomingJobs += 1;
+      if (anchorDate && (!row.nextDate || anchorDate < row.nextDate)) {
+        row.nextDate = anchorDate;
+      }
+    }
+  }
+
+  const crewRows = Array.from(crewMap.values()).sort((left, right) => {
+    if (right.assignedJobs !== left.assignedJobs) {
+      return right.assignedJobs - left.assignedJobs;
+    }
+    if (right.upcomingJobs !== left.upcomingJobs) {
+      return right.upcomingJobs - left.upcomingJobs;
+    }
+    return left.crew.localeCompare(right.crew);
+  });
+
+  const crewGapJobs = crewPoolJobs.filter((job) => normalizeCrew(job.assigned_crew).length === 0);
+
+  const nonInvoicedJobs = [
+    ...board.awaiting_approval,
+    ...board.scheduled,
+    ...board.in_progress,
+    ...board.inspection,
+    ...board.completed,
+  ];
+  const projectedRevenue = totalValue([
+    ...board.scheduled,
+    ...board.in_progress,
+    ...board.inspection,
+    ...board.completed,
+  ]);
+  const invoicedRevenue = totalValue(board.invoiced);
+  const completedNotInvoicedRevenue = totalValue(board.completed);
+  const awaitingApprovalRevenue = totalValue(board.awaiting_approval);
+  const next30DayValue = calendarData.jobs.reduce((sum, job) => sum + (job.bid_amount || 0), 0);
+
+  const completedAgingDays = board.completed
+    .map((job) => normalizeJobDate(job.completion_date))
+    .filter((value): value is string => Boolean(value))
+    .map((date) => daysBetween(fromIsoDate(date), now));
+  const completedAgingAvg = average(completedAgingDays);
+  const completedAgingMax = completedAgingDays.length > 0 ? Math.max(...completedAgingDays) : null;
+
+  const financialByStatusRows = statusRows.map((row) => ({
+    status: row.label,
+    count: row.jobs.length,
+    total: totalValue(row.jobs),
+  }));
+
+  const exportSuffix = toIsoDate(new Date());
+  const exportCsv = async (
+    label: string,
+    filename: string,
+    headers: string[],
+    rows: Array<Array<string | number | null | undefined>>,
+  ) => {
+    try {
+      setCsvExportNotice(null);
+      const result = await saveCsvWithDialog(filename, headers, rows);
+      setCsvExportNotice({
+        type: "success",
+        message:
+          result === "picker"
+            ? `${label} export saved.`
+            : `${label} export saved to default download location.`,
+      });
+    } catch (err) {
+      if (isAbortError(err)) {
+        return;
+      }
+      setCsvExportNotice({
+        type: "error",
+        message: err instanceof Error ? err.message : `Failed to export ${label}.`,
+      });
+    }
+  };
+
+  const exportPipelineCsv = () => {
+    void exportCsv(
+      "Pipeline Health",
+      `pipeline_health_${exportSuffix}.csv`,
+      ["Status", "Jobs", "Total Value", "Average Bid", "Average Days In Stage"],
+      pipelineRows.map((row) => [
+        row.label,
+        row.count,
+        row.total.toFixed(2),
+        row.avgBid.toFixed(2),
+        row.avgStageDays !== null ? row.avgStageDays.toFixed(1) : "",
+      ]),
+    );
+  };
+
+  const exportCrewCsv = () => {
+    void exportCsv(
+      "Crew Utilization",
+      `crew_utilization_${exportSuffix}.csv`,
+      ["Crew", "Assigned Jobs", "Assigned Value", "Upcoming 30-Day Jobs", "Next Date"],
+      crewRows.map((row) => [
+        row.crew,
+        row.assignedJobs,
+        row.assignedValue.toFixed(2),
+        row.upcomingJobs,
+        row.nextDate ?? "",
+      ]),
+    );
+  };
+
+  const exportFinancialCsv = () => {
+    void exportCsv(
+      "Financial Snapshot",
+      `financial_snapshot_${exportSuffix}.csv`,
+      ["Metric", "Value"],
+      [
+        ["Total Revenue", summary.metrics.total_revenue.toFixed(2)],
+        ["Total Profit", summary.metrics.total_profit.toFixed(2)],
+        ["Profit Margin %", summary.metrics.profit_margin_pct.toFixed(2)],
+        ["Projected Revenue (Open Work)", projectedRevenue.toFixed(2)],
+        ["Invoiced Revenue", invoicedRevenue.toFixed(2)],
+        ["Completed Not Invoiced Revenue", completedNotInvoicedRevenue.toFixed(2)],
+        ["Awaiting Approval Revenue", awaitingApprovalRevenue.toFixed(2)],
+        ["Non-Invoiced Pipeline Value", totalValue(nonInvoicedJobs).toFixed(2)],
+      ],
+    );
+  };
+
+  const exportJobsCsv = () => {
+    const rows = [...allJobs]
+      .sort((left, right) => left.project_name.localeCompare(right.project_name))
+      .map((job) => [
+        job.job_id,
+        job.project_name,
+        job.status_display,
+        (job.bid_amount || 0).toFixed(2),
+        normalizeCrew(job.assigned_crew).join(" | "),
+        normalizeJobDate(job.scheduled_date) ?? "",
+        normalizeJobDate(job.start_date) ?? "",
+        normalizeJobDate(job.completion_date) ?? "",
+        normalizeJobDate(job.invoice_date) ?? "",
+        job.invoice_number ?? "",
+      ]);
+    void exportCsv(
+      "Jobs Snapshot",
+      `jobs_snapshot_${exportSuffix}.csv`,
+      [
+        "Job ID",
+        "Project",
+        "Status",
+        "Bid Amount",
+        "Crew",
+        "Scheduled Date",
+        "Start Date",
+        "Completion Date",
+        "Invoice Date",
+        "Invoice Number",
+      ],
+      rows,
+    );
+  };
+
+  const exportMasterWorkbook = () => {
+    const summaryRows: Array<Array<string | number>> = [
+      ["Non-Invoiced Pipeline", totalValue(nonInvoicedJobs).toFixed(2)],
+      ["Invoiced Revenue", invoicedRevenue.toFixed(2)],
+      ["Approval Rate %", approvalRate.toFixed(1)],
+      ["Schedule Coverage %", scheduledCoverage.toFixed(1)],
+      ["Crew Assignment Gaps", crewGapJobs.length],
+      ["Next 30-Day Workload", calendarData.jobs.length],
+      ["Total Revenue", summary.metrics.total_revenue.toFixed(2)],
+      ["Total Profit", summary.metrics.total_profit.toFixed(2)],
+      ["Profit Margin %", summary.metrics.profit_margin_pct.toFixed(1)],
+      ["Projected Revenue", projectedRevenue.toFixed(2)],
+      ["Completed Not Invoiced Revenue", completedNotInvoicedRevenue.toFixed(2)],
+    ];
+
+    const sheets: SpreadsheetSheet[] = [
+      {
+        name: "Summary",
+        headers: ["Metric", "Value"],
+        rows: summaryRows,
+      },
+      {
+        name: "Pipeline Health",
+        headers: ["Status", "Jobs", "Total Value", "Average Bid", "Average Days In Stage"],
+        rows: pipelineRows.map((row) => [
+          row.label,
+          row.count,
+          row.total.toFixed(2),
+          row.avgBid.toFixed(2),
+          row.avgStageDays !== null ? row.avgStageDays.toFixed(1) : "",
+        ]),
+      },
+      {
+        name: "Bid Performance",
+        headers: ["Recent Job", "Status", "Bid", "Crew"],
+        rows: summary.recent_jobs.map((job) => [
+          job.project_name,
+          job.status_display,
+          (job.bid_amount || 0).toFixed(2),
+          normalizeCrew(job.assigned_crew).join(", ") || "Unassigned",
+        ]),
+      },
+      {
+        name: "Crew Utilization",
+        headers: ["Crew", "Assigned Jobs", "Upcoming 30 Days", "Assigned Value", "Next Date"],
+        rows: crewRows.map((row) => [
+          row.crew,
+          row.assignedJobs,
+          row.upcomingJobs,
+          row.assignedValue.toFixed(2),
+          row.nextDate ?? "",
+        ]),
+      },
+      {
+        name: "Financial Snapshot",
+        headers: ["Status", "Jobs", "Value"],
+        rows: financialByStatusRows.map((row) => [row.status, row.count, row.total.toFixed(2)]),
+      },
+      {
+        name: "Jobs Snapshot",
+        headers: [
+          "Job ID",
+          "Project",
+          "Status",
+          "Bid Amount",
+          "Crew",
+          "Scheduled Date",
+          "Start Date",
+          "Completion Date",
+          "Invoice Date",
+          "Invoice Number",
+        ],
+        rows: [...allJobs]
+          .sort((left, right) => left.project_name.localeCompare(right.project_name))
+          .map((job) => [
+            job.job_id,
+            job.project_name,
+            job.status_display,
+            (job.bid_amount || 0).toFixed(2),
+            normalizeCrew(job.assigned_crew).join(" | "),
+            normalizeJobDate(job.scheduled_date) ?? "",
+            normalizeJobDate(job.start_date) ?? "",
+            normalizeJobDate(job.completion_date) ?? "",
+            normalizeJobDate(job.invoice_date) ?? "",
+            job.invoice_number ?? "",
+          ]),
+      },
+    ];
+
+    void (async () => {
+      try {
+        setCsvExportNotice(null);
+        const XLSX = await import("xlsx");
+        const workbook = XLSX.utils.book_new();
+        const usedSheetNames = new Set<string>();
+        sheets.forEach((sheet, index) => {
+          let name = normalizeSpreadsheetSheetName(sheet.name, index);
+          if (usedSheetNames.has(name)) {
+            let copyIndex = 2;
+            while (usedSheetNames.has(name)) {
+              const suffix = ` (${copyIndex})`;
+              const base = normalizeSpreadsheetSheetName(sheet.name, index).slice(0, Math.max(1, 31 - suffix.length));
+              name = `${base}${suffix}`;
+              copyIndex += 1;
+            }
+          }
+          usedSheetNames.add(name);
+          const aoa: Array<Array<string | number>> = [
+            sheet.headers,
+            ...sheet.rows.map((row) => row.map((value) => (value === null || value === undefined ? "" : value))),
+          ];
+          const worksheet = XLSX.utils.aoa_to_sheet(aoa);
+          XLSX.utils.book_append_sheet(workbook, worksheet, name);
+        });
+        const workbookBytes = XLSX.write(workbook, { bookType: "xlsx", type: "array" });
+        const result = await saveBlobWithDialog(
+          `reports_master_${exportSuffix}.xlsx`,
+          new Blob([workbookBytes], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }),
+          {
+            description: "Excel Workbook",
+            mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            extensions: [".xlsx"],
+          },
+        );
+        setCsvExportNotice({
+          type: "success",
+          message:
+            result === "picker"
+              ? "Master workbook export saved."
+              : "Master workbook export saved to default download location.",
+        });
+      } catch (err) {
+        if (isAbortError(err)) {
+          return;
+        }
+        setCsvExportNotice({
+          type: "error",
+          message: err instanceof Error ? err.message : "Failed to export master workbook.",
+        });
+      }
+    })();
+  };
+
+  return (
+    <section className="panel-stack reports-shell">
+      <article className="panel reports-header-panel">
+        <div>
+          <h2>Reports & Insights</h2>
+          <p>Track pipeline health, bidding throughput, crew workload, and financial performance.</p>
+          <p className="file-picker-hint">
+            Upcoming workload window: {calendarData.start_date} to {calendarData.end_date}
+          </p>
+        </div>
+        <div className="reports-header-actions">
+          <button className="nav-item compact" onClick={() => onNavigate("jobs")} type="button">
+            Open Jobs Board
+          </button>
+          <button className="nav-item compact" onClick={() => onNavigate("calendar")} type="button">
+            Open Calendar
+          </button>
+          <button className="nav-item compact" onClick={() => void loadReports(true)} type="button" disabled={refreshing}>
+            {refreshing ? "Refreshing..." : "Refresh Reports"}
+          </button>
+          <p className="reports-last-refresh">
+            Last refresh: <strong>{lastRefreshedAt || "Just now"}</strong>
+          </p>
+        </div>
+      </article>
+
+      {error ? <article className="panel error-panel"><p>{error}</p></article> : null}
+      {csvExportNotice ? (
+        <article className={`panel export-notice ${csvExportNotice.type}`}>
+          <p>{csvExportNotice.message}</p>
+        </article>
+      ) : null}
+
+      <section className="kpi-grid reports-kpi-grid">
+        <article className="panel">
+          <h2>Non-Invoiced Pipeline</h2>
+          <p className="kpi-value">{money.format(totalValue(nonInvoicedJobs))}</p>
+        </article>
+        <article className="panel">
+          <h2>Invoiced Revenue</h2>
+          <p className="kpi-value">{money.format(invoicedRevenue)}</p>
+        </article>
+        <article className="panel">
+          <h2>Approval Rate</h2>
+          <p className="kpi-value">{approvalRate.toFixed(1)}%</p>
+        </article>
+        <article className="panel">
+          <h2>Schedule Coverage</h2>
+          <p className="kpi-value">{scheduledCoverage.toFixed(1)}%</p>
+        </article>
+        <article className="panel">
+          <h2>Crew Assignment Gaps</h2>
+          <p className="kpi-value">{crewGapJobs.length}</p>
+        </article>
+        <article className="panel">
+          <h2>Next 30-Day Workload</h2>
+          <p className="kpi-value">{calendarData.jobs.length}</p>
+        </article>
+      </section>
+
+      <section className="reports-grid">
+        <article className="panel reports-panel">
+          <div className="settings-section-header">
+            <h3>Pipeline Health</h3>
+            <button className="nav-item compact" onClick={exportPipelineCsv} type="button">
+              Export CSV
+            </button>
+          </div>
+          <div className="reports-mini-kpis">
+            <div className="reports-mini-kpi">
+              <span>Total Jobs</span>
+              <strong>{allJobs.length}</strong>
+            </div>
+            <div className="reports-mini-kpi">
+              <span>Overdue Jobs</span>
+              <strong>{summary.overdue_jobs.length}</strong>
+            </div>
+            <div className="reports-mini-kpi">
+              <span>Avg Bid</span>
+              <strong>{money.format(avgBidAmount)}</strong>
+            </div>
+          </div>
+          <div className="reports-table-wrap">
+            <table className="reports-table">
+              <thead>
+                <tr>
+                  <th>Status</th>
+                  <th>Jobs</th>
+                  <th>Total Value</th>
+                  <th>Avg Bid</th>
+                  <th>Avg Days</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pipelineRows.map((row) => (
+                  <tr key={row.key}>
+                    <td>{row.label}</td>
+                    <td>{row.count}</td>
+                    <td>{money.format(row.total)}</td>
+                    <td>{money.format(row.avgBid)}</td>
+                    <td>{row.avgStageDays !== null ? row.avgStageDays.toFixed(1) : "N/A"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </article>
+
+        <article className="panel reports-panel">
+          <div className="settings-section-header">
+            <h3>Bid Performance</h3>
+          </div>
+          <div className="reports-mini-kpis">
+            <div className="reports-mini-kpi">
+              <span>Confirmed Bids</span>
+              <strong>{allJobs.length}</strong>
+            </div>
+            <div className="reports-mini-kpi">
+              <span>Approved Jobs</span>
+              <strong>{approvedJobs.length}</strong>
+            </div>
+            <div className="reports-mini-kpi">
+              <span>Awaiting Approval Value</span>
+              <strong>{money.format(awaitingApprovalRevenue)}</strong>
+            </div>
+            <div className="reports-mini-kpi">
+              <span>Next 30-Day Value</span>
+              <strong>{money.format(next30DayValue)}</strong>
+            </div>
+          </div>
+          <div className="reports-table-wrap">
+            <table className="reports-table">
+              <thead>
+                <tr>
+                  <th>Recent Job</th>
+                  <th>Status</th>
+                  <th>Bid</th>
+                  <th>Crew</th>
+                </tr>
+              </thead>
+              <tbody>
+                {summary.recent_jobs.length === 0 ? (
+                  <tr>
+                    <td colSpan={4}>No recent jobs available.</td>
+                  </tr>
+                ) : (
+                  summary.recent_jobs.slice(0, 8).map((job) => (
+                    <tr key={`recent-${job.job_id}`}>
+                      <td>{job.project_name}</td>
+                      <td>{job.status_display}</td>
+                      <td>{money.format(job.bid_amount || 0)}</td>
+                      <td>{normalizeCrew(job.assigned_crew).join(", ") || "Unassigned"}</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </article>
+
+        <article className="panel reports-panel">
+          <div className="settings-section-header">
+            <h3>Crew Utilization</h3>
+            <button className="nav-item compact" onClick={exportCrewCsv} type="button">
+              Export CSV
+            </button>
+          </div>
+          <p className="reports-note">
+            {crewGapJobs.length > 0
+              ? `${crewGapJobs.length} open jobs need crew assignment.`
+              : "All open jobs currently have crew assigned."}
+          </p>
+          <div className="reports-table-wrap">
+            <table className="reports-table">
+              <thead>
+                <tr>
+                  <th>Crew</th>
+                  <th>Assigned Jobs</th>
+                  <th>Upcoming 30 Days</th>
+                  <th>Assigned Value</th>
+                  <th>Next Date</th>
+                </tr>
+              </thead>
+              <tbody>
+                {crewRows.length === 0 ? (
+                  <tr>
+                    <td colSpan={5}>No crew data available.</td>
+                  </tr>
+                ) : (
+                  crewRows.map((row) => (
+                    <tr key={row.crew}>
+                      <td>{row.crew}</td>
+                      <td>{row.assignedJobs}</td>
+                      <td>{row.upcomingJobs}</td>
+                      <td>{money.format(row.assignedValue)}</td>
+                      <td>{row.nextDate ? formatDate(row.nextDate) : "N/A"}</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </article>
+
+        <article className="panel reports-panel">
+          <div className="settings-section-header">
+            <h3>Financial Snapshot</h3>
+            <button className="nav-item compact" onClick={exportFinancialCsv} type="button">
+              Export CSV
+            </button>
+          </div>
+          <div className="reports-mini-kpis">
+            <div className="reports-mini-kpi">
+              <span>Total Revenue</span>
+              <strong>{money.format(summary.metrics.total_revenue)}</strong>
+            </div>
+            <div className="reports-mini-kpi">
+              <span>Total Profit</span>
+              <strong>{money.format(summary.metrics.total_profit)}</strong>
+            </div>
+            <div className="reports-mini-kpi">
+              <span>Profit Margin</span>
+              <strong>{summary.metrics.profit_margin_pct.toFixed(1)}%</strong>
+            </div>
+            <div className="reports-mini-kpi">
+              <span>Projected Revenue</span>
+              <strong>{money.format(projectedRevenue)}</strong>
+            </div>
+          </div>
+          <div className="reports-table-wrap">
+            <table className="reports-table">
+              <thead>
+                <tr>
+                  <th>Status</th>
+                  <th>Jobs</th>
+                  <th>Value</th>
+                </tr>
+              </thead>
+              <tbody>
+                {financialByStatusRows.map((row) => (
+                  <tr key={`financial-${row.status}`}>
+                    <td>{row.status}</td>
+                    <td>{row.count}</td>
+                    <td>{money.format(row.total)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="reports-note">
+            Completed not invoiced: <strong>{money.format(completedNotInvoicedRevenue)}</strong>. Average aging:{" "}
+            <strong>{completedAgingAvg !== null ? `${completedAgingAvg.toFixed(1)} days` : "N/A"}</strong>. Max aging:{" "}
+            <strong>{completedAgingMax !== null ? `${completedAgingMax} days` : "N/A"}</strong>.
+          </p>
+        </article>
+
+        <article className="panel reports-panel reports-panel-wide">
+          <div className="settings-section-header">
+            <h3>Exports</h3>
+          </div>
+          <p className="reports-note">
+            Export report tables to CSV for external analysis, client updates, or accounting workflows.
+          </p>
+          <div className="reports-export-grid">
+            <button className="nav-item" onClick={exportMasterWorkbook} type="button">
+              Export Master Workbook
+            </button>
+            <button className="nav-item" onClick={exportPipelineCsv} type="button">
+              Export Pipeline Health
+            </button>
+            <button className="nav-item" onClick={exportCrewCsv} type="button">
+              Export Crew Utilization
+            </button>
+            <button className="nav-item" onClick={exportFinancialCsv} type="button">
+              Export Financial Snapshot
+            </button>
+            <button className="nav-item" onClick={exportJobsCsv} type="button">
+              Export Jobs Snapshot
+            </button>
+          </div>
+        </article>
+      </section>
     </section>
   );
 }
@@ -5928,13 +6815,14 @@ function App() {
         {activeView === "bidding" ? <BiddingView userId={authUser.user_id} onOpenJobs={() => setActiveView("jobs")} /> : null}
         {activeView === "jobs" ? <JobsView userId={authUser.user_id} onOpenJobFiles={openJobFilesForJob} /> : null}
         {activeView === "jobfiles" ? <JobFilesView userId={authUser.user_id} initialJobId={jobFilesFocusId} /> : null}
-        {activeView === "calendar" ? <CalendarView userId={authUser.user_id} /> : null}
-        {activeView === "reports" ? (
-          <PlaceholderView
-            title="Reports Migration"
-            message="Next step: port revenue/profit reporting and export workflow."
+        {activeView === "calendar" ? (
+          <CalendarView
+            userId={authUser.user_id}
+            onNavigate={setActiveView}
+            onOpenJobFiles={openJobFilesForJob}
           />
         ) : null}
+        {activeView === "reports" ? <ReportsInsightsView userId={authUser.user_id} onNavigate={setActiveView} /> : null}
         {activeView === "settings" ? <SettingsView userId={authUser.user_id} username={authUser.username} /> : null}
       </main>
     </div>
