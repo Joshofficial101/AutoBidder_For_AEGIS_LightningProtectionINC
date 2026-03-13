@@ -132,8 +132,11 @@ class OptimizedPDFParser:
             progress_callback: Optional callback function(current_page, total_pages, status_message)
         """
         self.progress_callback = progress_callback
-        self._extracted_dimensions: List[Tuple[float, float]] = []
         self._use_ocr = False  # Will be set to True if text extraction yields no dimensions
+        self._best_dimension_score = float("-inf")
+        self._best_height_score = float("-inf")
+        self._best_area_score = float("-inf")
+        self._best_perimeter_score = float("-inf")
         
     def _report_progress(self, current: int, total: int, message: str):
         """Report progress to callback if available."""
@@ -155,6 +158,12 @@ class OptimizedPDFParser:
         """
         start_time = time.time()
         result = ExtractionResult()
+        # Reset per-document state so reused parser instances do not leak scores.
+        self._use_ocr = False
+        self._best_dimension_score = float("-inf")
+        self._best_height_score = float("-inf")
+        self._best_area_score = float("-inf")
+        self._best_perimeter_score = float("-inf")
         
         if not pdf_path.exists():
             return result
@@ -494,102 +503,220 @@ class OptimizedPDFParser:
         
         return result
     
-    def _extract_dimensions_from_text(self, text: str, result: ExtractionResult, source: str = "text"):
-        """Extract all dimension data from text using compiled patterns."""
-        
-        # Extract LxW dimensions
-        for pattern in DIMENSION_PATTERNS:
-            matches = pattern.findall(text)
-            for match in matches:
-                try:
-                    val1, val2 = float(match[0]), float(match[1])
-                    # Filter: Reasonable building dimensions (10-1000 ft)
-                    if 10 <= val1 <= 1000 and 10 <= val2 <= 1000:
-                        self._extracted_dimensions.append((val1, val2))
-                except (ValueError, IndexError):
-                    continue
-        
-        # Find the most likely building dimensions (largest reasonable pair)
-        if self._extracted_dimensions:
-            # Sort by area (likely the building footprint is larger than rooms)
-            sorted_dims = sorted(self._extracted_dimensions, key=lambda x: x[0] * x[1], reverse=True)
-            best = sorted_dims[0]
-            result.length_ft = max(best[0], best[1])
-            result.width_ft = min(best[0], best[1])
-        
-        # Extract height (score candidates, prefer labeled "height" over generic)
-        height_candidates: List[Tuple[float, float]] = []
-        for pattern in HEIGHT_PATTERNS:
-            for match in pattern.finditer(text):
-                try:
-                    value = float(match.group(1))
-                    pattern_text = pattern.pattern.lower()
-                    score = 1.0
-                    if "height" in pattern_text or "building" in pattern_text:
-                        score += 1.5
-                    if "stor" in pattern_text or "floor" in pattern_text:
-                        score -= 0.25
-                        if value < 20:  # Likely number of stories
-                            value = value * 12 + 2  # 12 ft per story + 2 ft
+    @staticmethod
+    def _parse_numeric_token(raw_value: str) -> Optional[float]:
+        try:
+            return float(raw_value.replace(",", "").strip())
+        except ValueError:
+            return None
 
-                    # Validate: Reasonable building height (8-500 ft)
-                    if 8 <= value <= 500:
-                        height_candidates.append((score, value))
-                except (ValueError, IndexError):
-                    continue
+    @staticmethod
+    def _normalize_unit(raw_unit: Optional[str]) -> str:
+        return (raw_unit or "").lower().replace(" ", "")
+
+    @classmethod
+    def _length_to_feet(cls, value: float, unit: Optional[str]) -> float:
+        normalized = cls._normalize_unit(unit)
+        if normalized in {"mm"}:
+            return value / 304.8
+        if normalized in {"cm"}:
+            return value / 30.48
+        if normalized in {"m"}:
+            return value * 3.28084
+        return value
+
+    @classmethod
+    def _area_to_sqft(cls, value: float, unit: Optional[str]) -> float:
+        normalized = cls._normalize_unit(unit)
+        if normalized in {"m²", "m2", "sqm", "sq.m", "sqm.", "sqmeter", "sqmeters", "sqmetre", "sqmetres", "sqm²"}:
+            return value * 10.7639
+        if normalized in {"sq.m", "sq.m.", "sqmeter", "sqmetre", "sqmeters", "sqmetres"}:
+            return value * 10.7639
+        return value
+
+    @staticmethod
+    def _has_schedule_noise(context: str) -> bool:
+        noise_terms = (
+            "window schedule",
+            "door schedule",
+            "schedule",
+            "door",
+            "window",
+            "joinery",
+            "fixture",
+            "cabinet",
+            "room finish",
+            "material schedule",
+        )
+        return any(term in context for term in noise_terms)
+
+    def _extract_dimensions_from_text(self, text: str, result: ExtractionResult, source: str = "text"):
+        """
+        Extract dimensions using weighted scoring:
+        - Labels boost confidence but are not required.
+        - Unit-aware conversion (mm/cm/m/m² to ft/sqft).
+        - Schedule/table noise is penalized to protect drawing-heavy plans.
+        """
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        number_with_unit = re.compile(
+            r"(\d{1,3}(?:,\d{3})*(?:\.\d+)?)\s*(mm|cm|m²|m2|sq\.?\s*m|sqm|sqft|sq\.?\s*ft|sf|lf|linear\s*ft|m|ft|feet|')?",
+            re.IGNORECASE,
+        )
+        lxw_pattern = re.compile(
+            r"(\d+(?:\.\d+)?)\s*(mm|cm|m|ft|feet|')?\s*[xX×]\s*(\d+(?:\.\d+)?)\s*(mm|cm|m|ft|feet|')?",
+            re.IGNORECASE,
+        )
+
+        # Candidate 1: LxW dimensions (drawing callouts and labels)
+        dim_candidates: List[Tuple[float, Tuple[float, float]]] = []
+        for match in lxw_pattern.finditer(text):
+            raw_a = self._parse_numeric_token(match.group(1))
+            raw_b = self._parse_numeric_token(match.group(3))
+            if raw_a is None or raw_b is None:
+                continue
+            unit_a = match.group(2)
+            unit_b = match.group(4)
+            primary_unit = unit_a or unit_b
+            a_ft = self._length_to_feet(raw_a, primary_unit)
+            b_ft = self._length_to_feet(raw_b, unit_b or primary_unit)
+            if not (8 <= a_ft <= 2000 and 8 <= b_ft <= 2000):
+                continue
+
+            context = text[max(0, match.start() - 120):min(len(text), match.end() + 120)].lower()
+            score = 1.0
+            if any(keyword in context for keyword in ("building", "footprint", "roof", "ground floor", "first floor", "plan")):
+                score += 1.5
+            if self._has_schedule_noise(context):
+                score -= 1.5
+            if primary_unit:
+                score += 0.35
+            if source == "ocr" and score <= 1.0:
+                score -= 0.35
+            dim_candidates.append((score, (max(a_ft, b_ft), min(a_ft, b_ft))))
+
+        if dim_candidates:
+            best_dim_score, best_dim_pair = max(dim_candidates, key=lambda item: (item[0], item[1][0] * item[1][1]))
+            if best_dim_score > self._best_dimension_score:
+                self._best_dimension_score = best_dim_score
+                result.length_ft, result.width_ft = best_dim_pair
+
+        height_candidates: List[Tuple[float, float]] = []
+        area_candidates: List[Tuple[float, float]] = []
+        perimeter_candidates: List[Tuple[float, float]] = []
+
+        # Candidate 2: Line-based extraction with nearby context.
+        for idx, line in enumerate(lines):
+            line_lower = line.lower()
+            context = " ".join(lines[max(0, idx - 2):min(len(lines), idx + 3)]).lower()
+            noise_penalty = 1.5 if self._has_schedule_noise(context) else 0.0
+            numeric_tokens = re.findall(r"\d+(?:,\d{3})*(?:\.\d+)?", line_lower)
+            dense_numeric_row = len(numeric_tokens) >= 4
+
+            # Height candidates
+            if any(token in context for token in ("height", "ridge", "eave", "parapet", "hgt", "ht")):
+                for value_match in number_with_unit.finditer(line):
+                    raw = self._parse_numeric_token(value_match.group(1))
+                    if raw is None:
+                        continue
+                    unit = value_match.group(2)
+                    height_ft = self._length_to_feet(raw, unit)
+                    if not (8 <= height_ft <= 250):
+                        continue
+                    score = 1.0
+                    if "building height" in context:
+                        score += 2.0
+                    elif "height" in context:
+                        score += 1.2
+                    if any(word in context for word in ("ridge", "eave", "parapet")):
+                        score += 0.45
+                    if "max" in line_lower:
+                        score -= 0.35
+                    if unit:
+                        score += 0.3
+                    if idx < 10:
+                        score += 0.2
+                    score -= noise_penalty
+                    if dense_numeric_row:
+                        score -= 0.4
+                    height_candidates.append((score, height_ft))
+
+            # Area candidates
+            if "area" in context:
+                for value_match in number_with_unit.finditer(line):
+                    raw = self._parse_numeric_token(value_match.group(1))
+                    if raw is None:
+                        continue
+                    unit = value_match.group(2)
+                    area_sqft = self._area_to_sqft(raw, unit)
+                    if not (100 <= area_sqft <= 10000000):
+                        continue
+                    score = 0.8
+                    if "total roof area" in context:
+                        score += 2.4
+                    elif "roof area" in context:
+                        score += 1.9
+                    elif "building area" in context or "gross floor area" in context:
+                        score += 1.5
+                    elif "area" in context:
+                        score += 0.9
+                    if unit and any(token in unit.lower() for token in ("m", "sq", "sf", "ft")):
+                        score += 0.3
+                    if idx < 12:
+                        score += 0.2
+                    score -= noise_penalty
+                    if dense_numeric_row:
+                        score -= 0.45
+                    if source == "ocr" and score <= 1.0:
+                        score -= 0.35
+                    area_candidates.append((score, area_sqft))
+
+            # Perimeter candidates
+            if "perimeter" in context or "linear" in context or "roof edge" in context:
+                for value_match in number_with_unit.finditer(line):
+                    raw = self._parse_numeric_token(value_match.group(1))
+                    if raw is None:
+                        continue
+                    unit = value_match.group(2)
+                    if unit is None and (dense_numeric_row or noise_penalty > 0):
+                        continue
+                    perimeter_ft = self._length_to_feet(raw, unit)
+                    if unit is None and perimeter_ft > 1200:
+                        continue
+                    if not (20 <= perimeter_ft <= 50000):
+                        continue
+                    score = 0.7
+                    if "roof perimeter" in context or "roof edge perimeter" in context:
+                        score += 2.2
+                    elif "building perimeter" in context:
+                        score += 1.8
+                    elif "perimeter" in context:
+                        score += 1.0
+                    if "linear" in context or "lf" in context:
+                        score += 0.35
+                    if unit:
+                        score += 0.25
+                    if idx < 12:
+                        score += 0.15
+                    score -= noise_penalty
+                    perimeter_candidates.append((score, perimeter_ft))
 
         if height_candidates:
-            # Prefer higher score; if tie, prefer larger height
-            height_candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
-            result.building_height_ft = height_candidates[0][1]
-        
-        # Extract area (score candidates; in OCR, prefer labeled area)
-        area_candidates: List[Tuple[float, float]] = []
-        for pattern in AREA_PATTERNS:
-            for match in pattern.finditer(text):
-                try:
-                    area_str = match.group(1).replace(",", "")
-                    area = float(area_str)
-                    pattern_text = pattern.pattern.lower()
-                    score = 1.0
-                    if "roof" in pattern_text or "building" in pattern_text or "floor" in pattern_text or "gross" in pattern_text or "total" in pattern_text:
-                        score += 1.5
-
-                    # In OCR, be stricter: down-rank generic area with no label
-                    if source == "ocr" and score <= 1.0:
-                        score -= 0.5
-
-                    # Validate: Reasonable building area (100 - 10,000,000 sqft)
-                    if 100 <= area <= 10000000:
-                        area_candidates.append((score, area))
-                except (ValueError, IndexError):
-                    continue
+            best_height_score, best_height = max(height_candidates, key=lambda item: (item[0], item[1]))
+            if best_height_score > self._best_height_score:
+                self._best_height_score = best_height_score
+                result.building_height_ft = best_height
 
         if area_candidates:
-            area_candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
-            result.roof_area_sqft = area_candidates[0][1]
-        
-        # Extract perimeter (score candidates)
-        perimeter_candidates: List[Tuple[float, float]] = []
-        for pattern in PERIMETER_PATTERNS:
-            for match in pattern.finditer(text):
-                try:
-                    perim_str = match.group(1).replace(",", "")
-                    perim = float(perim_str)
-                    pattern_text = pattern.pattern.lower()
-                    score = 1.0
-                    if "perimeter" in pattern_text or "roof" in pattern_text:
-                        score += 1.0
-
-                    # Validate: Reasonable perimeter (40 - 50,000 ft)
-                    if 40 <= perim <= 50000:
-                        perimeter_candidates.append((score, perim))
-                except (ValueError, IndexError):
-                    continue
+            best_area_score, best_area = max(area_candidates, key=lambda item: (item[0], item[1]))
+            if best_area_score > self._best_area_score:
+                self._best_area_score = best_area_score
+                result.roof_area_sqft = best_area
 
         if perimeter_candidates:
-            perimeter_candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
-            result.perimeter_ft = perimeter_candidates[0][1]
+            best_perimeter_score, best_perimeter = max(perimeter_candidates, key=lambda item: (item[0], item[1]))
+            if best_perimeter_score > self._best_perimeter_score:
+                self._best_perimeter_score = best_perimeter_score
+                result.perimeter_ft = best_perimeter
     
     def _extract_project_info(self, text: str, result: ExtractionResult, pdf_path: Path):
         """Extract project name and location from text."""
