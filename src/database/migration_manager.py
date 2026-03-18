@@ -239,6 +239,39 @@ def _down_add_jobs_invoicing_columns(conn: sqlite3.Connection) -> None:
     )
 
 
+def _up_add_project_workplans(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ProjectWorkPlans (
+            work_plan_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL UNIQUE,
+            user_id INTEGER NOT NULL,
+            source_file_name TEXT,
+            compliance_code TEXT NOT NULL,
+            canvas_width REAL NOT NULL,
+            canvas_height REAL NOT NULL,
+            plan_payload_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (project_id) REFERENCES Projects (project_id) ON DELETE CASCADE,
+            FOREIGN KEY (user_id) REFERENCES Users (user_id)
+        );
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_projectworkplans_user_project
+            ON ProjectWorkPlans (user_id, project_id);
+        """
+    )
+
+
+def _down_add_project_workplans(conn: sqlite3.Connection) -> None:
+    if not _table_exists(conn, "ProjectWorkPlans"):
+        return
+    conn.execute("DROP TABLE IF EXISTS ProjectWorkPlans;")
+
+
 MIGRATIONS: List[Migration] = [
     Migration(
         migration_id="20260220_001_projects_drop_customer_id",
@@ -263,6 +296,12 @@ MIGRATIONS: List[Migration] = [
         description="Add invoice fields to jobs workflow",
         up=_up_add_jobs_invoicing_columns,
         down=_down_add_jobs_invoicing_columns,
+    ),
+    Migration(
+        migration_id="20260315_005_project_workplans",
+        description="Add persisted project work plan storage",
+        up=_up_add_project_workplans,
+        down=_down_add_project_workplans,
     ),
 ]
 

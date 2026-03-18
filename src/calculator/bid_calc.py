@@ -168,6 +168,8 @@ class BidCalculator:
         else:  # NFPA 780
             compliance = NFPA780Compliance.check_compliance(project_data)
 
+        compliance = self._apply_component_overrides(compliance, project_data)
+
         # Step 2: Create bid object with pricing settings
         bid = Bid(
             project_name=project_data.get("project_name", "Lightning Protection Bid"),
@@ -220,6 +222,64 @@ class BidCalculator:
             bid.sections.append(bonding_section)
 
         return bid
+
+    def _apply_component_overrides(self, compliance: Dict[str, Any], project_data: Dict[str, Any]) -> Dict[str, Any]:
+        overrides = dict(project_data.get("component_overrides") or {})
+        if not overrides:
+            return compliance
+
+        building_height_ft = float(project_data.get("building_height_ft") or 0.0)
+        perimeter_ft = float(project_data.get("perimeter_ft") or 0.0)
+
+        air_terminals_total = overrides.get("air_terminals")
+        if air_terminals_total is not None and "air_terminals" in compliance:
+            original_total = compliance["air_terminals"].get("total", 0)
+            compliance["air_terminals"]["total"] = max(0, int(round(float(air_terminals_total))))
+            compliance["air_terminals"]["notes"] = (
+                f"{compliance['air_terminals'].get('notes', '')} | Manual work plan override "
+                f"(was {original_total}, now {compliance['air_terminals']['total']})"
+            ).strip()
+
+        downleads_total = overrides.get("downleads")
+        if downleads_total is not None and "conductors" in compliance:
+            num_downleads = max(2, int(round(float(downleads_total))))
+            vertical_ft = (building_height_ft + 10.0) * num_downleads if building_height_ft > 0 else 0.0
+            horizontal_ft = float(compliance["conductors"].get("horizontal_ft") or 0.0)
+            if horizontal_ft <= 0 and perimeter_ft > 0:
+                horizontal_ft = perimeter_ft * 1.2
+            compliance["conductors"]["num_downleads"] = num_downleads
+            compliance["conductors"]["vertical_ft"] = round(vertical_ft, 1)
+            compliance["conductors"]["horizontal_ft"] = round(horizontal_ft, 1)
+            compliance["conductors"]["total_length_ft"] = round(vertical_ft + horizontal_ft, 1)
+            compliance["conductors"]["notes"] = (
+                f"{compliance['conductors'].get('notes', '')} | Manual work plan override "
+                f"(downleads={num_downleads})"
+            ).strip()
+
+        ground_rods_total = overrides.get("ground_rods")
+        if ground_rods_total is not None and "grounding" in compliance:
+            original_rods = compliance["grounding"].get("total_rods", 0)
+            compliance["grounding"]["total_rods"] = max(0, int(round(float(ground_rods_total))))
+            compliance["grounding"]["notes"] = (
+                f"{compliance['grounding'].get('notes', '')} | Manual work plan override "
+                f"(was {original_rods}, now {compliance['grounding']['total_rods']})"
+            ).strip()
+
+        bonding_connections_total = overrides.get("bonding_connections")
+        if bonding_connections_total is not None:
+            total_connections = max(0, int(round(float(bonding_connections_total))))
+            bonding_wire_ft = float(compliance.get("bonding", {}).get("bonding_wire_ft") or 0.0)
+            if not bonding_wire_ft:
+                bonding_wire_ft = total_connections * 10.0
+            compliance.setdefault("bonding", {})
+            compliance["bonding"]["total_connections"] = total_connections
+            compliance["bonding"]["bonding_wire_ft"] = round(bonding_wire_ft, 1)
+            compliance["bonding"]["notes"] = (
+                f"{compliance['bonding'].get('notes', '')} | Manual work plan override "
+                f"(connections={total_connections})"
+            ).strip()
+
+        return compliance
 
     def _build_air_terminal_section(self, requirements: Dict[str, Any], material: str) -> BidSection:
         """Build the Air Terminals section of the bid."""

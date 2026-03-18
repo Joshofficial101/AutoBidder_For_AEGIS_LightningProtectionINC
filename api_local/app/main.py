@@ -18,6 +18,7 @@ from app.routers.dashboard import router as dashboard_router
 from app.routers.jobs import router as jobs_router
 from app.routers.calendar import router as calendar_router
 from app.routers.auth import router as auth_router
+from app.routers.plan_review import router as plan_review_router
 from app.schemas import RootResponse
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -58,6 +59,7 @@ app.include_router(dashboard_router)
 app.include_router(jobs_router)
 app.include_router(calendar_router)
 app.include_router(auth_router)
+app.include_router(plan_review_router)
 
 
 def _attach_correlation_header(request: Request, headers: dict | None = None) -> dict:

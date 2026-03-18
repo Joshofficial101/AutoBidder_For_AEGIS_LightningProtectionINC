@@ -18,6 +18,76 @@ from src.exporters.pdf_export import PDFSubmittalExporter
 from app.file_limits import assert_excel_file_within_limit
 
 
+def _stringify_autosave_value(value: Any, default: str = "") -> str:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def _normalize_autosave_payload(payload: Any) -> Dict[str, Any] | None:
+    if not isinstance(payload, dict):
+        return None
+
+    form_data = payload.get("form_data")
+    summary = payload.get("summary")
+    if isinstance(form_data, dict) and isinstance(summary, dict):
+        return {
+            "form_data": dict(form_data),
+            "summary": dict(summary),
+        }
+
+    project_data = payload.get("project_data") if isinstance(payload.get("project_data"), dict) else {}
+    file_paths = payload.get("file_paths") if isinstance(payload.get("file_paths"), dict) else {}
+    workers = payload.get("workers") if isinstance(payload.get("workers"), list) else []
+
+    if not project_data and not file_paths and not workers:
+        return None
+
+    normalized_workers: List[Dict[str, str]] = []
+    for worker in workers:
+        if not isinstance(worker, dict):
+            continue
+        normalized_workers.append(
+            {
+                "name": _stringify_autosave_value(worker.get("name")),
+                "wage_per_hour": _stringify_autosave_value(worker.get("wage_per_hour")),
+                "hours": _stringify_autosave_value(worker.get("hours")),
+            }
+        )
+
+    project_name = _stringify_autosave_value(project_data.get("project_name")).strip()
+    perimeter_ft = project_data.get("perimeter_ft")
+    normalized_form_data = {
+        "project_name": project_name,
+        "pricing_path": _stringify_autosave_value(file_paths.get("excel")),
+        "pricing_sheet": "",
+        "pdf_path": _stringify_autosave_value(file_paths.get("pdf")),
+        "building_height": _stringify_autosave_value(project_data.get("building_height_ft")),
+        "roof_area": _stringify_autosave_value(project_data.get("roof_area_sqft")),
+        "perimeter": _stringify_autosave_value(perimeter_ft),
+        "roof_length": _stringify_autosave_value(project_data.get("length_ft")),
+        "roof_width": _stringify_autosave_value(project_data.get("width_ft")),
+        "num_corners": _stringify_autosave_value(project_data.get("num_corners"), "4"),
+        "preferred_material": _stringify_autosave_value(project_data.get("preferred_material"), "copper") or "copper",
+        "selected_profile_id": "",
+        "selected_worker_preset_id": "",
+        "selected_saved_worker_id": "",
+        "workers": normalized_workers,
+        "has_manual_perimeter_override": perimeter_ft not in (None, ""),
+        "plan_review": None,
+        "plan_components": [],
+        "selected_plan_component_id": "",
+    }
+    return {
+        "form_data": normalized_form_data,
+        "summary": {
+            "project_name": project_name or "Untitled Project",
+        },
+    }
+
+
 def _apply_worker_labor_costs(bid, workers: List[Dict[str, Any]]) -> None:
     if not workers:
         return
@@ -267,4 +337,43 @@ def confirm_bid_to_job(payload: Dict[str, Any], user_id: int) -> Dict[str, Any]:
         "project_name": str(bid.project_name),
         "final_bid_amount": round(float(bid.adjusted_final_bid_amount), 2),
         "status": "awaiting_approval",
+    }
+
+
+def save_bid_autosave(user_id: int, payload: Dict[str, Any]) -> Dict[str, Any]:
+    db = DBConnector()
+    bid_repo = BidRepository(db)
+    bid_repo.save_autosave(user_id=user_id, payload=payload)
+    record = bid_repo.load_autosave_record(user_id)
+    normalized_payload = _normalize_autosave_payload(record.get("payload") if record else None)
+    return {
+        "user_id": user_id,
+        "has_autosave": bool(normalized_payload),
+        "updated_at": record.get("updated_at") if record else None,
+        "payload": normalized_payload,
+    }
+
+
+def load_bid_autosave(user_id: int) -> Dict[str, Any]:
+    db = DBConnector()
+    bid_repo = BidRepository(db)
+    record = bid_repo.load_autosave_record(user_id)
+    normalized_payload = _normalize_autosave_payload(record.get("payload") if record else None)
+    return {
+        "user_id": user_id,
+        "has_autosave": bool(normalized_payload),
+        "updated_at": record.get("updated_at") if record else None,
+        "payload": normalized_payload,
+    }
+
+
+def clear_bid_autosave(user_id: int) -> Dict[str, Any]:
+    db = DBConnector()
+    bid_repo = BidRepository(db)
+    bid_repo.clear_autosave(user_id)
+    return {
+        "user_id": user_id,
+        "has_autosave": False,
+        "updated_at": None,
+        "payload": None,
     }

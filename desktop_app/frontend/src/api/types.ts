@@ -147,6 +147,22 @@ export type BidConfirmResponse = {
   status: string;
 };
 
+export type BidAutosavePayload = {
+  form_data: Record<string, unknown>;
+  summary: Record<string, unknown>;
+};
+
+export type BidAutosaveRequest = {
+  payload: BidAutosavePayload;
+};
+
+export type BidAutosaveResponse = {
+  user_id: number;
+  has_autosave: boolean;
+  updated_at?: string | null;
+  payload?: BidAutosavePayload | null;
+};
+
 export type ParsePdfRequest = {
   pdf_file_path: string;
 };
@@ -154,6 +170,26 @@ export type ParsePdfRequest = {
 export type ParsePdfBase64Request = {
   file_name?: string;
   file_bytes_base64: string;
+};
+
+export type PlanReviewRequest = {
+  pdf_file_path?: string;
+  compliance_code?: string;
+  project_data: Record<string, unknown>;
+};
+
+export type PlanReviewBase64Request = {
+  file_name?: string;
+  file_bytes_base64: string;
+  compliance_code?: string;
+  project_data: Record<string, unknown>;
+};
+
+export type PlanReviewSaveRequest = {
+  project_name: string;
+  compliance_code?: string;
+  project_data: Record<string, unknown>;
+  plan_review: PlanReviewResponse;
 };
 
 export type ParsePdfResponse = {
@@ -171,6 +207,64 @@ export type ParsePdfResponse = {
     num_corners?: number | null;
     [key: string]: unknown;
   };
+};
+
+export type PlanReviewPoint = {
+  x: number;
+  y: number;
+};
+
+export type PlanReviewBounds = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+export type PlanReviewDimensions = {
+  building_height_ft: number;
+  roof_area_sqft: number;
+  perimeter_ft: number;
+  length_ft: number;
+  width_ft: number;
+  num_corners: number;
+};
+
+export type PlanReviewComponent = {
+  component_id: string;
+  component_type: string;
+  label: string;
+  placement_zone: string;
+  x: number;
+  y: number;
+};
+
+export type PlanReviewCounts = {
+  air_terminals: number;
+  downleads: number;
+  ground_rods: number;
+  bonding_connections: number;
+};
+
+export type PlanReviewResponse = {
+  project_name: string;
+  compliance_code: string;
+  source_file_name?: string | null;
+  canvas_width: number;
+  canvas_height: number;
+  dimensions: PlanReviewDimensions;
+  footprint_bounds: PlanReviewBounds;
+  footprint_outline: PlanReviewPoint[];
+  components: PlanReviewComponent[];
+  counts: PlanReviewCounts;
+  warnings: string[];
+};
+
+export type PlanReviewSaveResponse = {
+  user_id: number;
+  project_id: number;
+  project_name: string;
+  updated_at: string;
 };
 
 export type DashboardJobItem = {

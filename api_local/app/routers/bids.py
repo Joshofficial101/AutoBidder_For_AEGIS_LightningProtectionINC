@@ -10,8 +10,23 @@ from starlette.background import BackgroundTask
 from app.auth_dependencies import AuthenticatedUser, get_current_user
 from app.errors import ApiException, COMMON_ERROR_RESPONSES
 from app.file_limits import PayloadTooLargeError, assert_excel_base64_within_limit
-from app.schemas import BidConfirmResponse, BidPreviewBase64Request, BidPreviewRequest, BidPreviewResponse
-from app.services.bidding_service import confirm_bid_to_job, export_bid_excel, export_bid_pdf, preview_bid
+from app.schemas import (
+    BidAutosaveRequest,
+    BidAutosaveResponse,
+    BidConfirmResponse,
+    BidPreviewBase64Request,
+    BidPreviewRequest,
+    BidPreviewResponse,
+)
+from app.services.bidding_service import (
+    clear_bid_autosave,
+    confirm_bid_to_job,
+    export_bid_excel,
+    export_bid_pdf,
+    load_bid_autosave,
+    preview_bid,
+    save_bid_autosave,
+)
 from app.temp_files import safe_unlink
 
 router = APIRouter(
@@ -56,6 +71,55 @@ def _build_payload_from_base64_request(payload: BidPreviewBase64Request, pricing
         "project_data": payload.project_data,
         "workers": [worker.model_dump() for worker in payload.workers],
     }
+
+
+@router.get("/autosave", response_model=BidAutosaveResponse, responses=COMMON_ERROR_RESPONSES)
+def autosave_get(current_user: AuthenticatedUser = Depends(get_current_user)) -> BidAutosaveResponse:
+    try:
+        result = load_bid_autosave(current_user.user_id)
+        return BidAutosaveResponse(**result)
+    except Exception:
+        raise ApiException(
+            status_code=500,
+            code="BID_AUTOSAVE_FETCH_FAILED",
+            message="Bid autosave fetch failed.",
+        )
+
+
+@router.post("/autosave", response_model=BidAutosaveResponse, responses=COMMON_ERROR_RESPONSES)
+def autosave_save(
+    payload: BidAutosaveRequest,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+) -> BidAutosaveResponse:
+    try:
+        result = save_bid_autosave(current_user.user_id, payload.payload.model_dump())
+        return BidAutosaveResponse(**result)
+    except ValueError as exc:
+        raise ApiException(
+            status_code=400,
+            code="BID_AUTOSAVE_VALIDATION_ERROR",
+            message=str(exc),
+            detail=str(exc),
+        )
+    except Exception:
+        raise ApiException(
+            status_code=500,
+            code="BID_AUTOSAVE_SAVE_FAILED",
+            message="Bid autosave save failed.",
+        )
+
+
+@router.delete("/autosave", response_model=BidAutosaveResponse, responses=COMMON_ERROR_RESPONSES)
+def autosave_clear(current_user: AuthenticatedUser = Depends(get_current_user)) -> BidAutosaveResponse:
+    try:
+        result = clear_bid_autosave(current_user.user_id)
+        return BidAutosaveResponse(**result)
+    except Exception:
+        raise ApiException(
+            status_code=500,
+            code="BID_AUTOSAVE_CLEAR_FAILED",
+            message="Bid autosave clear failed.",
+        )
 
 
 @router.post(

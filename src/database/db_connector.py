@@ -249,6 +249,21 @@ class DBConnector:
         FOREIGN KEY (job_id) REFERENCES Jobs (job_id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS ProjectWorkPlans (
+        work_plan_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id INTEGER NOT NULL UNIQUE,
+        user_id INTEGER NOT NULL,
+        source_file_name TEXT,
+        compliance_code TEXT NOT NULL,
+        canvas_width REAL NOT NULL,
+        canvas_height REAL NOT NULL,
+        plan_payload_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (project_id) REFERENCES Projects (project_id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES Users (user_id)
+    );
+
     -- Dashboard and board query indexes
     CREATE INDEX IF NOT EXISTS idx_jobs_user_status
         ON Jobs (user_id, status);
@@ -258,6 +273,8 @@ class DBConnector:
         ON Jobs (user_id, scheduled_date);
     CREATE INDEX IF NOT EXISTS idx_jobfinancials_job_id
         ON JobFinancials (job_id);
+    CREATE INDEX IF NOT EXISTS idx_projectworkplans_user_project
+        ON ProjectWorkPlans (user_id, project_id);
     """
 
     def __init__(self):

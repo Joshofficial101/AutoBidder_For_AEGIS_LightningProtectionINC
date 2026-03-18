@@ -224,6 +224,22 @@ class BidConfirmResponse(ApiModel):
     status: str
 
 
+class BidAutosavePayload(ApiModel):
+    form_data: Dict[str, Any] = Field(default_factory=dict)
+    summary: Dict[str, Any] = Field(default_factory=dict)
+
+
+class BidAutosaveRequest(ApiModel):
+    payload: BidAutosavePayload
+
+
+class BidAutosaveResponse(ApiModel):
+    user_id: int
+    has_autosave: bool
+    updated_at: Optional[str] = None
+    payload: Optional[BidAutosavePayload] = None
+
+
 class ParsePdfRequest(ApiModel):
     pdf_file_path: FilePath
 
@@ -273,6 +289,103 @@ class ParsePdfBase64Request(ApiModel):
         if suffix and suffix != ".pdf":
             raise ValueError("file_name must use a .pdf extension.")
         return value
+
+
+class PlanReviewRequest(ApiModel):
+    pdf_file_path: Optional[FilePath] = None
+    compliance_code: ComplianceCode = ComplianceCode.DUAL
+    project_data: Dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("pdf_file_path")
+    @classmethod
+    def validate_plan_review_pdf_path(cls, value: Optional[Path]) -> Optional[Path]:
+        if value is None:
+            return value
+        if value.suffix.lower() != ".pdf":
+            raise ValueError("pdf_file_path must be a .pdf file.")
+        return value
+
+
+class PlanReviewBase64Request(ApiModel):
+    file_name: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    file_bytes_base64: str = Field(min_length=1, max_length=MAX_PDF_BASE64_CHARS)
+    compliance_code: ComplianceCode = ComplianceCode.DUAL
+    project_data: Dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("file_name")
+    @classmethod
+    def validate_plan_review_file_name(cls, value: Optional[str]) -> Optional[str]:
+        if not value:
+            return value
+        suffix = Path(value).suffix.lower()
+        if suffix and suffix != ".pdf":
+            raise ValueError("file_name must use a .pdf extension.")
+        return value
+
+
+class PlanPoint(ApiModel):
+    x: float
+    y: float
+
+
+class PlanBounds(ApiModel):
+    x: float
+    y: float
+    width: float
+    height: float
+
+
+class PlanReviewDimensions(ApiModel):
+    building_height_ft: float
+    roof_area_sqft: float
+    perimeter_ft: float
+    length_ft: float
+    width_ft: float
+    num_corners: int
+
+
+class PlanReviewComponent(ApiModel):
+    component_id: str
+    component_type: str
+    label: str
+    placement_zone: str
+    x: float
+    y: float
+
+
+class PlanReviewCounts(ApiModel):
+    air_terminals: int
+    downleads: int
+    ground_rods: int
+    bonding_connections: int
+
+
+class PlanReviewResponse(ApiModel):
+    project_name: str
+    compliance_code: ComplianceCode
+    source_file_name: Optional[str] = None
+    canvas_width: float
+    canvas_height: float
+    dimensions: PlanReviewDimensions
+    footprint_bounds: PlanBounds
+    footprint_outline: List[PlanPoint] = Field(default_factory=list)
+    components: List[PlanReviewComponent] = Field(default_factory=list)
+    counts: PlanReviewCounts
+    warnings: List[str] = Field(default_factory=list)
+
+
+class PlanReviewSaveRequest(ApiModel):
+    project_name: str = Field(min_length=1, max_length=160)
+    compliance_code: ComplianceCode = ComplianceCode.DUAL
+    project_data: Dict[str, Any] = Field(default_factory=dict)
+    plan_review: PlanReviewResponse
+
+
+class PlanReviewSaveResponse(ApiModel):
+    user_id: int
+    project_id: int
+    project_name: str
+    updated_at: str
 
 
 class ApiError(ApiModel):

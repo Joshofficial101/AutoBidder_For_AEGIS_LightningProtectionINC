@@ -1,6 +1,7 @@
 import { ChangeEvent, FormEvent, MouseEvent, useEffect, useRef, useState } from "react";
 import {
   approveJob,
+  clearBidAutosave,
   cleanupJobExports,
   confirmBid,
   confirmBidUpload,
@@ -11,6 +12,10 @@ import {
   exportBidExcelUpload,
   exportBidPdf,
   exportBidPdfUpload,
+  generatePlanReview,
+  generatePlanReviewUpload,
+  getBidAutosave,
+  loadPlanReview,
   getCalendarJobs,
   getDashboardSummary,
   getHealthReadiness,
@@ -25,6 +30,8 @@ import {
   previewBidUpload,
   register,
   resetPasswordWithBackupCode,
+  saveBidAutosave,
+  savePlanReview,
   setAuthFailureHandler,
   setAuthToken,
   verifyPassword,
@@ -32,6 +39,7 @@ import {
 } from "./api/client";
 import {
   AuthUser,
+  BidAutosaveResponse,
   BidPreviewResponse,
   CalendarJobItem,
   CalendarJobsResponse,
@@ -43,6 +51,8 @@ import {
   JobAssetsIndexResponse,
   JobBoardStatus,
   JobsBoardResponse,
+  PlanReviewComponent,
+  PlanReviewResponse,
 } from "./api/types";
 
 type NavKey = "dashboard" | "bidding" | "jobs" | "jobfiles" | "calendar" | "reports" | "settings";
@@ -51,6 +61,28 @@ type WorkerInput = {
   name: string;
   wage_per_hour: string;
   hours: string;
+};
+type PlanComponentType = "air_terminal" | "downlead" | "ground_rod" | "bonding";
+type BiddingWorkspaceDraft = {
+  project_name: string;
+  pricing_path: string;
+  pricing_sheet: string;
+  pdf_path: string;
+  building_height: string;
+  roof_area: string;
+  perimeter: string;
+  roof_length: string;
+  roof_width: string;
+  num_corners: string;
+  preferred_material: string;
+  selected_profile_id: string;
+  selected_worker_preset_id: string;
+  selected_saved_worker_id: string;
+  workers: WorkerInput[];
+  has_manual_perimeter_override: boolean;
+  plan_review: PlanReviewResponse | null;
+  plan_components: PlanReviewComponent[];
+  selected_plan_component_id: string;
 };
 type WorkerPresetWorker = {
   name: string;
@@ -179,6 +211,45 @@ const DEFAULT_BIDDING_PROFILE_SETTINGS: BiddingProfileSettings = {
 const DEFAULT_BIDDING_PROFILE_NAME = "Default";
 const DEFAULT_WORKER_PRESET_NAME = "Crew Preset";
 const EMPTY_WORKER_INPUT: WorkerInput = { name: "", wage_per_hour: "", hours: "" };
+
+const PLAN_COMPONENT_LABEL_PREFIX: Record<PlanComponentType, string> = {
+  air_terminal: "AT",
+  downlead: "DL",
+  ground_rod: "GR",
+  bonding: "B",
+};
+
+const PLAN_COMPONENT_TITLE: Record<PlanComponentType, string> = {
+  air_terminal: "Air Terminals",
+  downlead: "Downleads",
+  ground_rod: "Ground Rods",
+  bonding: "Bonding",
+};
+
+const PLAN_COMPONENT_FILL: Record<PlanComponentType, string> = {
+  air_terminal: "#d97706",
+  downlead: "#2563eb",
+  ground_rod: "#16a34a",
+  bonding: "#7c3aed",
+};
+
+function countPlanComponents(components: PlanReviewComponent[]) {
+  return components.reduce(
+    (acc, component) => {
+      if (component.component_type === "air_terminal") {
+        acc.air_terminals += 1;
+      } else if (component.component_type === "downlead") {
+        acc.downleads += 1;
+      } else if (component.component_type === "ground_rod") {
+        acc.ground_rods += 1;
+      } else if (component.component_type === "bonding") {
+        acc.bonding_connections += 1;
+      }
+      return acc;
+    },
+    { air_terminals: 0, downleads: 0, ground_rods: 0, bonding_connections: 0 },
+  );
+}
 const workflowAlertSettingFields: Array<{
   key: WorkflowAlertSettingsField;
   label: string;
@@ -2067,8 +2138,19 @@ function JobList({
   );
 }
 
-function DashboardView({ onNavigate, userId }: { onNavigate: (view: NavKey) => void; userId: number }) {
+function DashboardView({
+  onNavigate,
+  onCreateBidding,
+  onResumeBidding,
+  userId,
+}: {
+  onNavigate: (view: NavKey) => void;
+  onCreateBidding: () => void;
+  onResumeBidding: () => void;
+  userId: number;
+}) {
   const [summary, setSummary] = useState<DashboardSummaryResponse | null>(null);
+  const [draftAutosave, setDraftAutosave] = useState<BidAutosaveResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -2081,8 +2163,16 @@ function DashboardView({ onNavigate, userId }: { onNavigate: (view: NavKey) => v
         setLoading(true);
       }
       setError(null);
-      const payload = await getDashboardSummary();
-      setSummary(payload);
+      const [summaryResult, autosaveResult] = await Promise.allSettled([getDashboardSummary(), getBidAutosave()]);
+      if (summaryResult.status !== "fulfilled") {
+        throw summaryResult.reason;
+      }
+      setSummary(summaryResult.value);
+      if (autosaveResult.status === "fulfilled") {
+        setDraftAutosave(autosaveResult.value);
+      } else {
+        setDraftAutosave(null);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load dashboard");
     } finally {
@@ -2154,6 +2244,7 @@ function DashboardView({ onNavigate, userId }: { onNavigate: (view: NavKey) => v
   const topOverdueJob = summary.overdue_jobs[0];
   const topTodayJob = summary.todays_jobs[0];
   const topUpcomingJob = summary.upcoming_jobs[0];
+  const draftProjectName = String(draftAutosave?.payload?.summary?.project_name || "").trim();
 
   return (
     <>
@@ -2174,10 +2265,6 @@ function DashboardView({ onNavigate, userId }: { onNavigate: (view: NavKey) => v
         <article className="panel">
           <h2>Active Jobs</h2>
           <p className="kpi-value">{summary.metrics.active_jobs}</p>
-        </article>
-        <article className="panel">
-          <h2>Profit Margin</h2>
-          <p className="kpi-value">{summary.metrics.profit_margin_pct.toFixed(1)}%</p>
         </article>
         <article className="panel">
           <h2>Completed Jobs</h2>
@@ -2212,7 +2299,12 @@ function DashboardView({ onNavigate, userId }: { onNavigate: (view: NavKey) => v
         <article className="panel">
           <h2>Quick Actions</h2>
           <div className="action-stack">
-            <button className="nav-item" onClick={() => onNavigate("bidding")} type="button">
+            {draftAutosave?.has_autosave ? (
+              <button className="nav-item" onClick={onResumeBidding} type="button">
+                {draftProjectName ? `Continue ${draftProjectName}` : "Continue Last Project"}
+              </button>
+            ) : null}
+            <button className="nav-item" onClick={onCreateBidding} type="button">
               Create New Bid
             </button>
             <button className="nav-item" onClick={() => onNavigate("jobs")} type="button">
@@ -2304,7 +2396,15 @@ function DashboardView({ onNavigate, userId }: { onNavigate: (view: NavKey) => v
   );
 }
 
-function BiddingView({ userId, onOpenJobs }: { userId: number; onOpenJobs: () => void }) {
+function BiddingView({
+  userId,
+  onOpenJobs,
+  restoreDraftOnMount,
+}: {
+  userId: number;
+  onOpenJobs: () => void;
+  restoreDraftOnMount: boolean;
+}) {
   const [pricingPath, setPricingPath] = useState(() => readDefaultPricingFilePath(userId));
   const [pricingSheet, setPricingSheet] = useState("");
   const [pdfPath, setPdfPath] = useState("");
@@ -2314,11 +2414,26 @@ function BiddingView({ userId, onOpenJobs }: { userId: number; onOpenJobs: () =>
   const [buildingHeight, setBuildingHeight] = useState("");
   const [roofArea, setRoofArea] = useState("");
   const [perimeter, setPerimeter] = useState("");
+  const [hasManualPerimeterOverride, setHasManualPerimeterOverride] = useState(false);
+  const [roofLength, setRoofLength] = useState("");
+  const [roofWidth, setRoofWidth] = useState("");
   const [numCorners, setNumCorners] = useState("4");
+  const [showAdvancedDimensions, setShowAdvancedDimensions] = useState(false);
   const [preferredMaterial, setPreferredMaterial] = useState("copper");
-  const [hasMetalRoof, setHasMetalRoof] = useState(false);
   const [workers, setWorkers] = useState<WorkerInput[]>([{ ...EMPTY_WORKER_INPUT }]);
   const [preview, setPreview] = useState<BidPreviewResponse | null>(null);
+  const [planReview, setPlanReview] = useState<PlanReviewResponse | null>(null);
+  const [planComponents, setPlanComponents] = useState<PlanReviewComponent[]>([]);
+  const [selectedPlanComponentId, setSelectedPlanComponentId] = useState("");
+  const [isGeneratingPlan, setIsGeneratingPlan] = useState(false);
+  const [isSavingPlan, setIsSavingPlan] = useState(false);
+  const [isLoadingPlan, setIsLoadingPlan] = useState(false);
+  const [isRestoringDraft, setIsRestoringDraft] = useState(false);
+  const [draftReady, setDraftReady] = useState(false);
+  const [draftSavedAt, setDraftSavedAt] = useState<string | null>(null);
+  const [draftStatusMessage, setDraftStatusMessage] = useState<string | null>(null);
+  const [planReviewNotice, setPlanReviewNotice] = useState<string | null>(null);
+  const [draggingPlanComponentId, setDraggingPlanComponentId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isBusy, setIsBusy] = useState(false);
   const [isConfirmingBid, setIsConfirmingBid] = useState(false);
@@ -2351,6 +2466,8 @@ function BiddingView({ userId, onOpenJobs }: { userId: number; onOpenJobs: () =>
   const [workerActionNotice, setWorkerActionNotice] = useState<string | null>(null);
   const pricingPickerRef = useRef<HTMLInputElement | null>(null);
   const pdfPickerRef = useRef<HTMLInputElement | null>(null);
+  const planSvgRef = useRef<SVGSVGElement | null>(null);
+  const draftSaveTimerRef = useRef<number | null>(null);
   const parseProgressTimerRef = useRef<number | null>(null);
   const exportNoticeTimerRef = useRef<number | null>(null);
 
@@ -2399,10 +2516,15 @@ function BiddingView({ userId, onOpenJobs }: { userId: number; onOpenJobs: () =>
     () => () => {
       stopParseProgressTicker();
       clearExportNoticeTimer();
+      if (draftSaveTimerRef.current !== null) {
+        window.clearTimeout(draftSaveTimerRef.current);
+        draftSaveTimerRef.current = null;
+      }
     },
     [],
   );
   useEffect(() => {
+    let canceled = false;
     const library = readBiddingProfileLibrary(userId);
     setProfileLibrary(library);
     setSelectedProfileId(library.active_profile_id);
@@ -2416,7 +2538,82 @@ function BiddingView({ userId, onOpenJobs }: { userId: number; onOpenJobs: () =>
     setAppliedSavedWorkerId("");
     setWorkerActionNotice(null);
     setWorkers([{ ...EMPTY_WORKER_INPUT }]);
-  }, [userId]);
+    setPerimeter("");
+    setHasManualPerimeterOverride(false);
+    setRoofLength("");
+    setRoofWidth("");
+    setPlanReview(null);
+    setPlanComponents([]);
+    setSelectedPlanComponentId("");
+    setPlanReviewNotice(null);
+    setDraggingPlanComponentId(null);
+    setDraftSavedAt(null);
+    setDraftStatusMessage(null);
+    setDraftReady(false);
+    setIsRestoringDraft(true);
+
+    const restoreDraft = async () => {
+      if (!restoreDraftOnMount) {
+        setDraftStatusMessage("Starting a new bid.");
+        setIsRestoringDraft(false);
+        setDraftReady(true);
+        return;
+      }
+      try {
+        const response = await getBidAutosave();
+        if (canceled || !response.has_autosave || !response.payload) {
+          return;
+        }
+        const formData = response.payload.form_data as Partial<BiddingWorkspaceDraft>;
+        setPricingPath(String(formData.pricing_path ?? readDefaultPricingFilePath(userId)));
+        setPricingSheet(String(formData.pricing_sheet ?? ""));
+        setPdfPath(String(formData.pdf_path ?? ""));
+        setProjectName(String(formData.project_name ?? ""));
+        setBuildingHeight(String(formData.building_height ?? ""));
+        setRoofArea(String(formData.roof_area ?? ""));
+        setPerimeter(String(formData.perimeter ?? ""));
+        setHasManualPerimeterOverride(Boolean(formData.has_manual_perimeter_override));
+        setRoofLength(String(formData.roof_length ?? ""));
+        setRoofWidth(String(formData.roof_width ?? ""));
+        setNumCorners(String(formData.num_corners ?? "4"));
+        setPreferredMaterial(String(formData.preferred_material ?? "copper"));
+        setSelectedProfileId(String(formData.selected_profile_id ?? library.active_profile_id));
+        setSelectedWorkerPresetId(String(formData.selected_worker_preset_id ?? ""));
+        setSelectedSavedWorkerId(String(formData.selected_saved_worker_id ?? ""));
+
+        const restoredWorkers = Array.isArray(formData.workers)
+          ? (formData.workers as WorkerInput[]).filter((worker) => worker && typeof worker === "object")
+          : [];
+        setWorkers(restoredWorkers.length > 0 ? restoredWorkers : [{ ...EMPTY_WORKER_INPUT }]);
+
+        const restoredPlan = formData.plan_review && typeof formData.plan_review === "object"
+          ? (formData.plan_review as PlanReviewResponse)
+          : null;
+        const restoredComponents = Array.isArray(formData.plan_components)
+          ? (formData.plan_components as PlanReviewComponent[])
+          : restoredPlan?.components ?? [];
+        setPlanReview(restoredPlan);
+        setPlanComponents(restoredComponents);
+        setSelectedPlanComponentId(String(formData.selected_plan_component_id ?? restoredComponents[0]?.component_id ?? ""));
+        setDraftSavedAt(response.updated_at ?? null);
+        setDraftStatusMessage("Last draft restored.");
+      } catch (err) {
+        if (!canceled) {
+          setDraftStatusMessage(err instanceof Error ? err.message : "Failed to restore last draft.");
+        }
+      } finally {
+        if (!canceled) {
+          setIsRestoringDraft(false);
+          setDraftReady(true);
+        }
+      }
+    };
+
+    void restoreDraft();
+    return () => {
+      canceled = true;
+    };
+  }, [restoreDraftOnMount, userId]);
 
   const updateWorker = (index: number, patch: Partial<WorkerInput>) => {
     setWorkers((prev) =>
@@ -2551,6 +2748,13 @@ function BiddingView({ userId, onOpenJobs }: { userId: number; onOpenJobs: () =>
     }
     if (typeof dimensions.perimeter === "number") {
       setPerimeter(String(dimensions.perimeter));
+      setHasManualPerimeterOverride(true);
+    }
+    if (typeof dimensions.length === "number") {
+      setRoofLength(String(dimensions.length));
+    }
+    if (typeof dimensions.width === "number") {
+      setRoofWidth(String(dimensions.width));
     }
     if (typeof payload.extracted.num_corners === "number") {
       setNumCorners(String(payload.extracted.num_corners));
@@ -2648,7 +2852,6 @@ function BiddingView({ userId, onOpenJobs }: { userId: number; onOpenJobs: () =>
     setPdfPath(nativePath ?? file.name);
     setError(null);
     event.target.value = "";
-    void handleParsePdf(file, nativePath);
   };
 
   const buildWorkersPayload = () =>
@@ -2660,6 +2863,485 @@ function BiddingView({ userId, onOpenJobs }: { userId: number; onOpenJobs: () =>
         hours: toNumber(worker.hours) ?? 0,
       }));
 
+  const derivedPerimeterFromDimensions = (() => {
+    const lengthValue = toNumber(roofLength);
+    const widthValue = toNumber(roofWidth);
+    if (
+      typeof lengthValue !== "number" ||
+      typeof widthValue !== "number" ||
+      lengthValue <= 0 ||
+      widthValue <= 0
+    ) {
+      return null;
+    }
+    return 2 * (lengthValue + widthValue);
+  })();
+
+  const computedPerimeterValue = toNumber(perimeter) ?? derivedPerimeterFromDimensions;
+
+  const formatFeetValue = (value: number) => {
+    const rounded = Math.round(value * 100) / 100;
+    return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(2).replace(/\.?0+$/, "");
+  };
+
+  useEffect(() => {
+    if (hasManualPerimeterOverride || typeof derivedPerimeterFromDimensions !== "number") {
+      return;
+    }
+    const nextValue = formatFeetValue(derivedPerimeterFromDimensions);
+    if (perimeter !== nextValue) {
+      setPerimeter(nextValue);
+    }
+  }, [derivedPerimeterFromDimensions, hasManualPerimeterOverride, perimeter]);
+
+  useEffect(() => {
+    if (hasManualPerimeterOverride) {
+      return;
+    }
+    if (typeof derivedPerimeterFromDimensions === "number") {
+      return;
+    }
+    if (perimeter) {
+      setPerimeter("");
+    }
+  }, [derivedPerimeterFromDimensions, hasManualPerimeterOverride, perimeter]);
+
+  const isCompletedFeetField = (value: string) => {
+    const parsed = toNumber(value);
+    return typeof parsed === "number" && parsed > 0;
+  };
+
+  const effectiveCornersValue = Math.max(1, Math.round(toNumber(numCorners) ?? 4));
+
+  const manualDimensionGuidance = (() => {
+    const heightValue = toNumber(buildingHeight);
+    const roofAreaValue = toNumber(roofArea);
+    const perimeterValue = toNumber(perimeter);
+    if (
+      typeof heightValue === "number" &&
+      heightValue > 0 &&
+      typeof roofAreaValue === "number" &&
+      roofAreaValue > 0 &&
+      typeof perimeterValue === "number" &&
+      perimeterValue > 0
+    ) {
+      return "Ready: core manual dimensions are filled in.";
+    }
+    if (
+      typeof heightValue === "number" &&
+      heightValue > 0 &&
+      typeof roofAreaValue === "number" &&
+      roofAreaValue > 0 &&
+      typeof derivedPerimeterFromDimensions === "number" &&
+      derivedPerimeterFromDimensions > 0
+    ) {
+      return "Ready: perimeter will be calculated from roof length and roof width.";
+    }
+    return "Best results: enter height, roof area, corners, and either perimeter or both roof length and roof width.";
+  })();
+
+  const validateManualDimensions = (): string | null => {
+    const heightValue = toNumber(buildingHeight);
+    const roofAreaValue = toNumber(roofArea);
+    const cornersValue = toNumber(numCorners);
+    if (typeof heightValue !== "number" || heightValue <= 0) {
+      return "Enter building height in feet.";
+    }
+    if (typeof roofAreaValue !== "number" || roofAreaValue <= 0) {
+      return "Enter roof area in square feet.";
+    }
+    if (typeof cornersValue !== "number" || cornersValue < 1) {
+      return "Enter the number of roof corners.";
+    }
+    if (typeof computedPerimeterValue !== "number" || computedPerimeterValue <= 0) {
+      return "Enter perimeter, or fill in both roof length and roof width so perimeter can be calculated.";
+    }
+    return null;
+  };
+
+  const currentPlanCounts = countPlanComponents(planComponents);
+  const selectedPlanComponent =
+    planComponents.find((component) => component.component_id === selectedPlanComponentId) ?? null;
+
+  const buildPlanReviewProjectData = () => ({
+    project_name: projectName.trim() || "Lightning Protection Work Plan",
+    building_height_ft: toNumber(buildingHeight) ?? undefined,
+    roof_area_sqft: toNumber(roofArea) ?? undefined,
+    perimeter_ft: computedPerimeterValue ?? undefined,
+    length_ft: toNumber(roofLength) ?? undefined,
+    width_ft: toNumber(roofWidth) ?? undefined,
+    num_corners: Math.max(1, Math.round(toNumber(numCorners) ?? 4)),
+    preferred_material: preferredMaterial,
+  });
+
+  const syncDimensionsFromPlanReview = (review: PlanReviewResponse) => {
+    setProjectName(review.project_name);
+    setBuildingHeight(formatFeetValue(review.dimensions.building_height_ft));
+    setRoofArea(String(Math.round(review.dimensions.roof_area_sqft)));
+    setRoofLength(formatFeetValue(review.dimensions.length_ft));
+    setRoofWidth(formatFeetValue(review.dimensions.width_ft));
+    setPerimeter(formatFeetValue(review.dimensions.perimeter_ft));
+    setHasManualPerimeterOverride(true);
+    setNumCorners(String(review.dimensions.num_corners));
+  };
+
+  const buildCurrentPlanReviewPayload = (): PlanReviewResponse | null => {
+    if (!planReview) {
+      return null;
+    }
+    return {
+      ...planReview,
+      project_name: projectName.trim() || planReview.project_name,
+      dimensions: {
+        building_height_ft: toNumber(buildingHeight) ?? planReview.dimensions.building_height_ft,
+        roof_area_sqft: toNumber(roofArea) ?? planReview.dimensions.roof_area_sqft,
+        perimeter_ft: computedPerimeterValue ?? planReview.dimensions.perimeter_ft,
+        length_ft: toNumber(roofLength) ?? planReview.dimensions.length_ft,
+        width_ft: toNumber(roofWidth) ?? planReview.dimensions.width_ft,
+        num_corners: Math.max(1, Math.round(toNumber(numCorners) ?? planReview.dimensions.num_corners)),
+      },
+      components: planComponents,
+      counts: currentPlanCounts,
+    };
+  };
+
+  const resetBiddingWorkspace = (nextPricingPath?: string) => {
+    setPricingPath(nextPricingPath ?? readDefaultPricingFilePath(userId));
+    setPricingSheet("");
+    setPdfPath("");
+    setPricingFile(null);
+    setPdfFile(null);
+    setProjectName("");
+    setBuildingHeight("");
+    setRoofArea("");
+    setPerimeter("");
+    setHasManualPerimeterOverride(false);
+    setRoofLength("");
+    setRoofWidth("");
+    setNumCorners("4");
+    setPreferredMaterial("copper");
+    setWorkers([{ ...EMPTY_WORKER_INPUT }]);
+    setPreview(null);
+    setError(null);
+    setPlanReview(null);
+    setPlanComponents([]);
+    setSelectedPlanComponentId("");
+    setPlanReviewNotice(null);
+    setDraftStatusMessage(null);
+    setDraftSavedAt(null);
+    setSelectedWorkerPresetId("");
+    setAppliedWorkerPresetId("");
+    setSelectedSavedWorkerId("");
+    setAppliedSavedWorkerId("");
+    setWorkerActionNotice(null);
+  };
+
+  const buildWorkspaceDraft = (): BiddingWorkspaceDraft => ({
+    project_name: projectName,
+    pricing_path: pricingPath,
+    pricing_sheet: pricingSheet,
+    pdf_path: pdfPath,
+    building_height: buildingHeight,
+    roof_area: roofArea,
+    perimeter: perimeter,
+    roof_length: roofLength,
+    roof_width: roofWidth,
+    num_corners: numCorners,
+    preferred_material: preferredMaterial,
+    selected_profile_id: selectedProfileId,
+    selected_worker_preset_id: selectedWorkerPresetId,
+    selected_saved_worker_id: selectedSavedWorkerId,
+    workers,
+    has_manual_perimeter_override: hasManualPerimeterOverride,
+    plan_review: buildCurrentPlanReviewPayload(),
+    plan_components: planComponents,
+    selected_plan_component_id: selectedPlanComponentId,
+  });
+
+  const hasMeaningfulWorkspaceDraft = (draft: BiddingWorkspaceDraft): boolean => {
+    const trimmedPricingPath = draft.pricing_path.trim();
+    const defaultPricingPath = readDefaultPricingFilePath(userId).trim();
+    return Boolean(
+      draft.project_name.trim() ||
+        (trimmedPricingPath && trimmedPricingPath !== defaultPricingPath) ||
+        draft.pricing_sheet.trim() ||
+        draft.pdf_path.trim() ||
+        draft.building_height.trim() ||
+        draft.roof_area.trim() ||
+        draft.perimeter.trim() ||
+        draft.roof_length.trim() ||
+        draft.roof_width.trim() ||
+        draft.plan_review ||
+        draft.workers.some((worker) => worker.name.trim() || worker.wage_per_hour.trim() || worker.hours.trim()),
+    );
+  };
+
+  const saveWorkspaceDraftNow = async (draft: BiddingWorkspaceDraft) => {
+    const response = await saveBidAutosave({
+      payload: {
+        form_data: draft,
+        summary: {
+          project_name: draft.project_name.trim() || "Untitled Project",
+        },
+      },
+    });
+    setDraftSavedAt(response.updated_at ?? null);
+    setDraftStatusMessage("Draft saved.");
+  };
+
+  const clearWorkspaceDraft = async () => {
+    await clearBidAutosave();
+    resetBiddingWorkspace();
+  };
+
+  const markPlanPricingDirty = (message: string) => {
+    setPreview(null);
+    setExportNotice(null);
+    setPlanReviewNotice(message);
+  };
+
+  const handleGeneratePlanReview = async () => {
+    const trimmedPdfPath = pdfPath.trim();
+    const payload = {
+      compliance_code: "DUAL",
+      project_data: buildPlanReviewProjectData(),
+    };
+
+    try {
+      setIsGeneratingPlan(true);
+      setError(null);
+      setPlanReviewNotice(null);
+
+      let response: PlanReviewResponse;
+      if (pdfFile) {
+        response = await generatePlanReviewUpload(pdfFile, payload);
+      } else {
+        response = await generatePlanReview({
+          pdf_file_path: looksLikeFilePath(trimmedPdfPath) ? trimmedPdfPath : undefined,
+          ...payload,
+        });
+      }
+
+      setPlanReview(response);
+      setPlanComponents(response.components);
+      setSelectedPlanComponentId(response.components[0]?.component_id ?? "");
+      syncDimensionsFromPlanReview(response);
+      markPlanPricingDirty(
+        "Work plan generated. Drag markers or add/remove components, then preview again to refresh pricing.",
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to generate work plan.");
+    } finally {
+      setIsGeneratingPlan(false);
+      setDraggingPlanComponentId(null);
+    }
+  };
+
+  const handleSavePlanReview = async () => {
+    const trimmedProjectName = projectName.trim();
+    const payload = buildCurrentPlanReviewPayload();
+    if (!trimmedProjectName) {
+      setError("Enter a project name before saving the work plan.");
+      return;
+    }
+    if (!payload) {
+      setError("Generate a work plan before saving it.");
+      return;
+    }
+
+    try {
+      setIsSavingPlan(true);
+      setError(null);
+      const response = await savePlanReview({
+        project_name: trimmedProjectName,
+        compliance_code: "DUAL",
+        project_data: buildPlanReviewProjectData(),
+        plan_review: payload,
+      });
+      setPlanReview(payload);
+      setPlanReviewNotice(`Work plan saved to project "${response.project_name}".`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save work plan.");
+    } finally {
+      setIsSavingPlan(false);
+    }
+  };
+
+  const handleLoadPlanReview = async () => {
+    const trimmedProjectName = projectName.trim();
+    if (!trimmedProjectName) {
+      setError("Enter the project name used when the work plan was saved.");
+      return;
+    }
+
+    try {
+      setIsLoadingPlan(true);
+      setError(null);
+      const response = await loadPlanReview(trimmedProjectName);
+      setPlanReview(response);
+      setPlanComponents(response.components);
+      setSelectedPlanComponentId(response.components[0]?.component_id ?? "");
+      syncDimensionsFromPlanReview(response);
+      setPlanReviewNotice(`Loaded saved work plan for "${trimmedProjectName}".`);
+      setPreview(null);
+      setExportNotice(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load work plan.");
+    } finally {
+      setIsLoadingPlan(false);
+    }
+  };
+
+  const handleClearDraft = async () => {
+    try {
+      setError(null);
+      await clearWorkspaceDraft();
+      setDraftReady(true);
+      setDraftStatusMessage("Draft cleared. Starting a new bid.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to clear draft.");
+    }
+  };
+
+  useEffect(() => {
+    if (!draftReady || isRestoringDraft) {
+      return;
+    }
+
+    if (draftSaveTimerRef.current) {
+      window.clearTimeout(draftSaveTimerRef.current);
+      draftSaveTimerRef.current = null;
+    }
+
+    const draft = buildWorkspaceDraft();
+    if (!hasMeaningfulWorkspaceDraft(draft)) {
+      return;
+    }
+
+    draftSaveTimerRef.current = window.setTimeout(() => {
+      void saveWorkspaceDraftNow(draft).catch((err) => {
+        setDraftStatusMessage(err instanceof Error ? err.message : "Failed to save draft.");
+      });
+      draftSaveTimerRef.current = null;
+    }, 900);
+
+    return () => {
+      if (draftSaveTimerRef.current) {
+        window.clearTimeout(draftSaveTimerRef.current);
+        draftSaveTimerRef.current = null;
+      }
+    };
+  }, [
+    buildingHeight,
+    draftReady,
+    hasManualPerimeterOverride,
+    isRestoringDraft,
+    numCorners,
+    pdfPath,
+    perimeter,
+    planComponents,
+    planReview,
+    preferredMaterial,
+    pricingPath,
+    pricingSheet,
+    projectName,
+    roofArea,
+    roofLength,
+    roofWidth,
+    selectedPlanComponentId,
+    selectedProfileId,
+    selectedSavedWorkerId,
+    selectedWorkerPresetId,
+    workers,
+  ]);
+
+  const movePlanComponentFromClientPoint = (componentId: string, clientX: number, clientY: number) => {
+    if (!planReview || !planSvgRef.current) {
+      return;
+    }
+    const rect = planSvgRef.current.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) {
+      return;
+    }
+    const nextX = ((clientX - rect.left) / rect.width) * planReview.canvas_width;
+    const nextY = ((clientY - rect.top) / rect.height) * planReview.canvas_height;
+    const clampedX = Math.max(18, Math.min(planReview.canvas_width - 18, nextX));
+    const clampedY = Math.max(18, Math.min(planReview.canvas_height - 18, nextY));
+    setPlanComponents((prev) =>
+      prev.map((component) =>
+        component.component_id === componentId ? { ...component, x: clampedX, y: clampedY } : component,
+      ),
+    );
+  };
+
+  useEffect(() => {
+    if (!draggingPlanComponentId) {
+      return;
+    }
+
+    const handleMouseMove = (event: globalThis.MouseEvent) => {
+      movePlanComponentFromClientPoint(draggingPlanComponentId, event.clientX, event.clientY);
+    };
+
+    const handleMouseUp = () => {
+      setDraggingPlanComponentId(null);
+    };
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, [draggingPlanComponentId, planReview]);
+
+  useEffect(() => {
+    if (!selectedPlanComponentId) {
+      return;
+    }
+    if (planComponents.some((component) => component.component_id === selectedPlanComponentId)) {
+      return;
+    }
+    setSelectedPlanComponentId(planComponents[0]?.component_id ?? "");
+  }, [planComponents, selectedPlanComponentId]);
+
+  const handlePlanComponentMouseDown = (event: MouseEvent<SVGGElement>, componentId: string) => {
+    event.preventDefault();
+    setSelectedPlanComponentId(componentId);
+    setDraggingPlanComponentId(componentId);
+    movePlanComponentFromClientPoint(componentId, event.clientX, event.clientY);
+  };
+
+  const addPlanComponent = (componentType: PlanComponentType) => {
+    if (!planReview) {
+      return;
+    }
+    const existingCount = planComponents.filter((component) => component.component_type === componentType).length;
+    const centerX = planReview.footprint_bounds.x + planReview.footprint_bounds.width / 2;
+    const centerY = planReview.footprint_bounds.y + planReview.footprint_bounds.height / 2;
+    const offset = existingCount * 12;
+    const nextComponent: PlanReviewComponent = {
+      component_id: `${componentType}_${Date.now()}`,
+      component_type: componentType,
+      label: `${PLAN_COMPONENT_LABEL_PREFIX[componentType]}-${existingCount + 1}`,
+      placement_zone: "manual",
+      x: centerX + offset,
+      y: centerY + offset,
+    };
+    setPlanComponents((prev) => [...prev, nextComponent]);
+    setSelectedPlanComponentId(nextComponent.component_id);
+    markPlanPricingDirty("Work plan counts changed. Preview again to refresh pricing.");
+  };
+
+  const deleteSelectedPlanComponent = () => {
+    if (!selectedPlanComponentId) {
+      return;
+    }
+    setPlanComponents((prev) => prev.filter((component) => component.component_id !== selectedPlanComponentId));
+    setSelectedPlanComponentId("");
+    markPlanPricingDirty("Work plan counts changed. Preview again to refresh pricing.");
+  };
+
   const buildSharedBidPayload = (profilePayload: BiddingProfileSettings) => ({
     pricing_sheet: pricingSheet.trim() || undefined,
     compliance_code: "DUAL",
@@ -2667,10 +3349,20 @@ function BiddingView({ userId, onOpenJobs }: { userId: number; onOpenJobs: () =>
       project_name: projectName.trim() || "Lightning Protection Bid",
       building_height_ft: toNumber(buildingHeight) ?? 0,
       roof_area_sqft: toNumber(roofArea) ?? 0,
-      perimeter_ft: toNumber(perimeter),
+      perimeter_ft: computedPerimeterValue,
+      length_ft: toNumber(roofLength) ?? undefined,
+      width_ft: toNumber(roofWidth) ?? undefined,
       num_corners: Math.max(1, Math.round(toNumber(numCorners) ?? 4)),
       preferred_material: preferredMaterial,
-      has_metal_roof: hasMetalRoof,
+      component_overrides: planReview ? currentPlanCounts : undefined,
+      plan_review_layout: planReview
+        ? {
+            source_file_name: planReview.source_file_name,
+            dimensions: planReview.dimensions,
+            components: planComponents,
+          }
+        : undefined,
+      has_metal_roof: false,
       labor_markup_pct: profilePayload.labor_markup_pct,
       overhead_pct: profilePayload.overhead_pct,
       profit_pct: profilePayload.profit_pct,
@@ -2706,6 +3398,11 @@ function BiddingView({ userId, onOpenJobs }: { userId: number; onOpenJobs: () =>
       return;
     }
     const profilePayload = getActiveProfileSettings();
+    const dimensionError = validateManualDimensions();
+    if (dimensionError) {
+      setError(dimensionError);
+      return;
+    }
 
     setIsBusy(true);
     setError(null);
@@ -2736,18 +3433,35 @@ function BiddingView({ userId, onOpenJobs }: { userId: number; onOpenJobs: () =>
     }
 
     const profilePayload = getActiveProfileSettings();
+    const dimensionError = validateManualDimensions();
+    if (dimensionError) {
+      setError(dimensionError);
+      return;
+    }
     setIsConfirmingBid(true);
     setError(null);
     setExportNotice(null);
 
     try {
       const sharedPayload = buildSharedBidPayload(profilePayload);
+      const trimmedProjectName = projectName.trim();
+      const currentPlanReviewPayload = buildCurrentPlanReviewPayload();
+      if (trimmedProjectName && currentPlanReviewPayload) {
+        await savePlanReview({
+          project_name: trimmedProjectName,
+          compliance_code: "DUAL",
+          project_data: buildPlanReviewProjectData(),
+          plan_review: currentPlanReviewPayload,
+        });
+        setPlanReviewNotice(`Work plan auto-saved to project "${trimmedProjectName}".`);
+      }
       const payload = pricingFile
         ? await confirmBidUpload(pricingFile, sharedPayload)
         : await confirmBid({
             pricing_file_path: trimmedPricingPath,
             ...sharedPayload,
           });
+      await clearBidAutosave().catch(() => undefined);
       showExportNotice(
         "success",
         `Bid confirmed. Job #${payload.job_id} created in Awaiting Approval.`,
@@ -2770,6 +3484,11 @@ function BiddingView({ userId, onOpenJobs }: { userId: number; onOpenJobs: () =>
     }
 
     const profilePayload = getActiveProfileSettings();
+    const dimensionError = validateManualDimensions();
+    if (dimensionError) {
+      setError(dimensionError);
+      return;
+    }
 
     setIsExportingExcel(true);
     setError(null);
@@ -2815,6 +3534,11 @@ function BiddingView({ userId, onOpenJobs }: { userId: number; onOpenJobs: () =>
     }
 
     const profilePayload = getActiveProfileSettings();
+    const dimensionError = validateManualDimensions();
+    if (dimensionError) {
+      setError(dimensionError);
+      return;
+    }
 
     setIsExportingPdf(true);
     setError(null);
@@ -2855,6 +3579,7 @@ function BiddingView({ userId, onOpenJobs }: { userId: number; onOpenJobs: () =>
   const selectedBiddingProfile =
     profileLibrary.profiles.find((profile) => profile.profile_id === selectedProfileId) ??
     getActiveBiddingProfile(profileLibrary);
+  const draftSavedAtLabel = draftSavedAt ? new Date(draftSavedAt).toLocaleString() : null;
 
   return (
     <section className="panel-stack">
@@ -2910,7 +3635,7 @@ function BiddingView({ userId, onOpenJobs }: { userId: number; onOpenJobs: () =>
                   onClick={() => void handleParsePdf()}
                   disabled={isParsing || (!pdfFile && !pdfPath.trim())}
                 >
-                  Re-Parse
+                  Try Parse PDF
                 </button>
               </div>
             </div>
@@ -2930,7 +3655,7 @@ function BiddingView({ userId, onOpenJobs }: { userId: number; onOpenJobs: () =>
               style={{ display: "none" }}
             />
 
-            <p className="file-picker-hint">PDF is parsed automatically when selected.</p>
+            <p className="file-picker-hint">PDF parsing is optional. Manual dimensions are the primary workflow.</p>
             {isParsing ? (
               <div className="parse-loading-box" role="status" aria-live="polite">
                 <div className="parse-loading-head">
@@ -2948,6 +3673,15 @@ function BiddingView({ userId, onOpenJobs }: { userId: number; onOpenJobs: () =>
                 </p>
               </div>
             ) : null}
+            <div className="draft-status-bar" aria-live="polite">
+              <div className="draft-status-copy">
+                <strong>{isRestoringDraft ? "Restoring last draft..." : draftStatusMessage || "Draft autosave is on."}</strong>
+                {draftSavedAtLabel ? <span>Last saved {draftSavedAtLabel}</span> : null}
+              </div>
+              <button className="nav-item compact" type="button" onClick={() => void handleClearDraft()}>
+                Start Fresh
+              </button>
+            </div>
           </div>
 
           <label>
@@ -2958,22 +3692,88 @@ function BiddingView({ userId, onOpenJobs }: { userId: number; onOpenJobs: () =>
             Project Name
             <input value={projectName} onChange={(e) => setProjectName(e.target.value)} />
           </label>
+          <div className="full-width bidding-dimension-note">{manualDimensionGuidance}</div>
           <label>
             Building Height (ft)
-            <input value={buildingHeight} onChange={(e) => setBuildingHeight(e.target.value)} />
+            <input
+              className={isCompletedFeetField(buildingHeight) ? "dimension-input-complete" : ""}
+              value={buildingHeight}
+              onChange={(e) => setBuildingHeight(e.target.value)}
+              placeholder="Example: 35.5"
+            />
           </label>
           <label>
             Roof Area (sqft)
-            <input value={roofArea} onChange={(e) => setRoofArea(e.target.value)} />
+            <input value={roofArea} onChange={(e) => setRoofArea(e.target.value)} placeholder="Example: 5200" />
           </label>
           <label>
-            Perimeter (ft)
-            <input value={perimeter} onChange={(e) => setPerimeter(e.target.value)} />
+            Roof Length (ft)
+            <input
+              className={isCompletedFeetField(roofLength) ? "dimension-input-complete" : ""}
+              value={roofLength}
+              onChange={(e) => setRoofLength(e.target.value)}
+              placeholder="Optional helper"
+            />
           </label>
           <label>
-            Corners
-            <input value={numCorners} onChange={(e) => setNumCorners(e.target.value)} />
+            Roof Width (ft)
+            <input
+              className={isCompletedFeetField(roofWidth) ? "dimension-input-complete" : ""}
+              value={roofWidth}
+              onChange={(e) => setRoofWidth(e.target.value)}
+              placeholder="Optional helper"
+            />
           </label>
+          <label>
+            <span className="dimension-label-row">
+              <span>Perimeter (ft)</span>
+              {!hasManualPerimeterOverride && derivedPerimeterFromDimensions ? (
+                <span className="dimension-auto-badge">Auto</span>
+              ) : null}
+            </span>
+            <input
+              className={isCompletedFeetField(perimeter) ? "dimension-input-complete" : ""}
+              value={perimeter}
+              onChange={(e) => {
+                const nextValue = e.target.value;
+                setPerimeter(nextValue);
+                setHasManualPerimeterOverride(nextValue.trim().length > 0);
+              }}
+              placeholder="Leave blank to calculate from length + width"
+            />
+            {hasManualPerimeterOverride ? (
+              <small className="dimension-helper-note">
+                Manual perimeter entered. Clear this field to switch back to auto-fill from length and width.
+              </small>
+            ) : derivedPerimeterFromDimensions ? (
+              <small className="dimension-helper-note">
+                Auto-filled from length and width: {formatFeetValue(derivedPerimeterFromDimensions)} ft
+              </small>
+            ) : (
+              <small className="dimension-helper-note">Enter this directly if length and width are unknown.</small>
+            )}
+          </label>
+          <div className="full-width advanced-dimensions-panel">
+            <button
+              className="advanced-dimensions-toggle"
+              type="button"
+              onClick={() => setShowAdvancedDimensions((prev) => !prev)}
+            >
+              {showAdvancedDimensions
+                ? "Hide More Dimensions"
+                : `More Dimensions (Corners: ${effectiveCornersValue})`}
+            </button>
+            <small className="dimension-helper-note advanced-dimensions-note">
+              Roof corners are currently set to {effectiveCornersValue}. Leave this at 4 unless the roof has more
+              outside corners than a simple rectangle.
+            </small>
+            {showAdvancedDimensions ? (
+              <label className="advanced-dimensions-field">
+                Roof Corners
+                <input value={numCorners} onChange={(e) => setNumCorners(e.target.value)} />
+              </label>
+            ) : null}
+          </div>
           <label>
             Preferred Material
             <select
@@ -2984,15 +3784,6 @@ function BiddingView({ userId, onOpenJobs }: { userId: number; onOpenJobs: () =>
               <option value="aluminum">Aluminum</option>
             </select>
           </label>
-          <label className="checkbox">
-            <input
-              checked={hasMetalRoof}
-              onChange={(e) => setHasMetalRoof(e.target.checked)}
-              type="checkbox"
-            />
-            Metal roof
-          </label>
-
           <div className="full-width bidding-runtime-profile">
             <div className="worker-preset-row">
               <label>
@@ -3113,6 +3904,230 @@ function BiddingView({ userId, onOpenJobs }: { userId: number; onOpenJobs: () =>
               >
                 Add Worker
             </button>
+          </div>
+
+          <div className="full-width plan-review-panel">
+            <div className="settings-section-header">
+              <div>
+                <h3>Work Plan Review</h3>
+                <p>Create a clean plan view from the current plan and adjust lightning components before pricing.</p>
+              </div>
+              <div className="plan-review-header-actions">
+                <button
+                  className="nav-item compact"
+                  type="button"
+                  onClick={() => void handleLoadPlanReview()}
+                  disabled={isLoadingPlan}
+                >
+                  {isLoadingPlan ? "Loading..." : "Load Saved"}
+                </button>
+                <button
+                  className="nav-item compact"
+                  type="button"
+                  onClick={() => void handleSavePlanReview()}
+                  disabled={isSavingPlan || !planReview}
+                >
+                  {isSavingPlan ? "Saving..." : "Save Layout"}
+                </button>
+                <button
+                  className="nav-item compact"
+                  type="button"
+                  onClick={() => void handleGeneratePlanReview()}
+                  disabled={isGeneratingPlan}
+                >
+                  {isGeneratingPlan ? "Generating..." : "Generate Work Plan"}
+                </button>
+              </div>
+            </div>
+            <p className="file-picker-hint">
+              Uses the selected PDF when available. If not, it generates from the current manual dimensions.
+            </p>
+            {planReviewNotice ? <p className="plan-review-note">{planReviewNotice}</p> : null}
+            {planReview ? (
+              <div className="plan-review-layout">
+                <div className="plan-review-canvas-shell">
+                  <svg
+                    ref={planSvgRef}
+                    className="plan-review-canvas"
+                    viewBox={`0 0 ${planReview.canvas_width} ${planReview.canvas_height}`}
+                  >
+                    <defs>
+                      <pattern id="plan-grid-pattern" width="24" height="24" patternUnits="userSpaceOnUse">
+                        <path d="M 24 0 L 0 0 0 24" fill="none" stroke="#b9d4f5" strokeWidth="1" />
+                      </pattern>
+                    </defs>
+                    <rect width={planReview.canvas_width} height={planReview.canvas_height} fill="#f5fbff" />
+                    <rect width={planReview.canvas_width} height={planReview.canvas_height} fill="url(#plan-grid-pattern)" />
+                    <rect
+                      x={planReview.footprint_bounds.x}
+                      y={planReview.footprint_bounds.y}
+                      width={planReview.footprint_bounds.width}
+                      height={planReview.footprint_bounds.height}
+                      rx="8"
+                      fill="#ffffff"
+                      stroke="#234f8b"
+                      strokeWidth="3"
+                    />
+                    <text x="44" y="54" className="plan-svg-title">
+                      {planReview.project_name}
+                    </text>
+                    <text x="44" y="82" className="plan-svg-subtitle">
+                      {planReview.dimensions.length_ft.toFixed(1)} ft x {planReview.dimensions.width_ft.toFixed(1)} ft
+                    </text>
+                    <text x="44" y="108" className="plan-svg-subtitle">
+                      Perimeter {planReview.dimensions.perimeter_ft.toFixed(1)} ft | Height {planReview.dimensions.building_height_ft.toFixed(1)} ft
+                    </text>
+                    <line
+                      x1={planReview.footprint_bounds.x}
+                      y1={planReview.footprint_bounds.y - 28}
+                      x2={planReview.footprint_bounds.x + planReview.footprint_bounds.width}
+                      y2={planReview.footprint_bounds.y - 28}
+                      stroke="#4b6f97"
+                      strokeWidth="2"
+                    />
+                    <text
+                      x={planReview.footprint_bounds.x + planReview.footprint_bounds.width / 2}
+                      y={planReview.footprint_bounds.y - 34}
+                      textAnchor="middle"
+                      className="plan-svg-dimension"
+                    >
+                      {planReview.dimensions.length_ft.toFixed(1)} ft
+                    </text>
+                    <line
+                      x1={planReview.footprint_bounds.x - 28}
+                      y1={planReview.footprint_bounds.y}
+                      x2={planReview.footprint_bounds.x - 28}
+                      y2={planReview.footprint_bounds.y + planReview.footprint_bounds.height}
+                      stroke="#4b6f97"
+                      strokeWidth="2"
+                    />
+                    <text
+                      x={planReview.footprint_bounds.x - 42}
+                      y={planReview.footprint_bounds.y + planReview.footprint_bounds.height / 2}
+                      textAnchor="middle"
+                      className="plan-svg-dimension"
+                      transform={`rotate(-90 ${planReview.footprint_bounds.x - 42} ${
+                        planReview.footprint_bounds.y + planReview.footprint_bounds.height / 2
+                      })`}
+                    >
+                      {planReview.dimensions.width_ft.toFixed(1)} ft
+                    </text>
+                    {planComponents.map((component) => {
+                      const fillColor =
+                        PLAN_COMPONENT_FILL[component.component_type as PlanComponentType] ?? "#1e4f96";
+                      const isSelected = component.component_id === selectedPlanComponentId;
+                      return (
+                        <g
+                          key={component.component_id}
+                          className={`plan-component-marker${isSelected ? " selected" : ""}`}
+                          transform={`translate(${component.x}, ${component.y})`}
+                          onMouseDown={(event) => handlePlanComponentMouseDown(event, component.component_id)}
+                          onClick={() => setSelectedPlanComponentId(component.component_id)}
+                        >
+                          <circle r="14" fill={fillColor} opacity={isSelected ? 0.95 : 0.85} />
+                          <circle r="18" fill="none" stroke={isSelected ? "#0f172a" : "transparent"} strokeWidth="2" />
+                          <text textAnchor="middle" dy="4" className="plan-component-label">
+                            {component.label}
+                          </text>
+                        </g>
+                      );
+                    })}
+                  </svg>
+                </div>
+                <div className="plan-review-sidebar">
+                  <div className="plan-review-summary">
+                    <h4>Current Counts</h4>
+                    <ul className="calc-line-list">
+                      <li>
+                        <span>Air Terminals</span>
+                        <strong>{currentPlanCounts.air_terminals}</strong>
+                      </li>
+                      <li>
+                        <span>Downleads</span>
+                        <strong>{currentPlanCounts.downleads}</strong>
+                      </li>
+                      <li>
+                        <span>Ground Rods</span>
+                        <strong>{currentPlanCounts.ground_rods}</strong>
+                      </li>
+                      <li>
+                        <span>Bonding</span>
+                        <strong>{currentPlanCounts.bonding_connections}</strong>
+                      </li>
+                    </ul>
+                  </div>
+                  <div className="plan-review-tools">
+                    <h4>Add Components</h4>
+                    <div className="plan-review-tool-grid">
+                      <button className="nav-item compact" type="button" onClick={() => addPlanComponent("air_terminal")}>
+                        Add Air Terminal
+                      </button>
+                      <button className="nav-item compact" type="button" onClick={() => addPlanComponent("downlead")}>
+                        Add Downlead
+                      </button>
+                      <button className="nav-item compact" type="button" onClick={() => addPlanComponent("ground_rod")}>
+                        Add Ground Rod
+                      </button>
+                      <button className="nav-item compact" type="button" onClick={() => addPlanComponent("bonding")}>
+                        Add Bonding
+                      </button>
+                    </div>
+                    <button
+                      className="nav-item compact"
+                      type="button"
+                      onClick={deleteSelectedPlanComponent}
+                      disabled={!selectedPlanComponent}
+                    >
+                      Delete Selected
+                    </button>
+                  </div>
+                  <div className="plan-review-selected">
+                    <h4>Selected Component</h4>
+                    {selectedPlanComponent ? (
+                      <ul className="calc-line-list">
+                        <li>
+                          <span>Label</span>
+                          <strong>{selectedPlanComponent.label}</strong>
+                        </li>
+                        <li>
+                          <span>Type</span>
+                          <strong>
+                            {PLAN_COMPONENT_TITLE[selectedPlanComponent.component_type as PlanComponentType] ??
+                              selectedPlanComponent.component_type}
+                          </strong>
+                        </li>
+                        <li>
+                          <span>Zone</span>
+                          <strong>{selectedPlanComponent.placement_zone}</strong>
+                        </li>
+                        <li>
+                          <span>X / Y</span>
+                          <strong>
+                            {selectedPlanComponent.x.toFixed(1)}, {selectedPlanComponent.y.toFixed(1)}
+                          </strong>
+                        </li>
+                      </ul>
+                    ) : (
+                      <p className="file-picker-hint">Click a marker to inspect it, then drag it to adjust placement.</p>
+                    )}
+                  </div>
+                  {planReview.warnings.length > 0 ? (
+                    <div className="plan-review-warnings">
+                      <h4>Review Warnings</h4>
+                      <ul>
+                        {planReview.warnings.map((warning, index) => (
+                          <li key={`${warning}-${index}`}>{warning}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            ) : (
+              <p className="file-picker-hint">
+                Generate a work plan to auto-place air terminals, downleads, ground rods, and bonding points.
+              </p>
+            )}
           </div>
 
           <div className="full-width action-row">
@@ -6527,6 +7542,7 @@ function App() {
   const [startupState, setStartupState] = useState<"checking" | "ready" | "error">("checking");
   const [startupMessage, setStartupMessage] = useState<string>("Checking backend readiness...");
   const [activeView, setActiveView] = useState<NavKey>("dashboard");
+  const [biddingEntryMode, setBiddingEntryMode] = useState<"resume" | "new">("resume");
   const [jobFilesFocusId, setJobFilesFocusId] = useState<number | null>(null);
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [authNotice, setAuthNotice] = useState<string | null>(null);
@@ -6612,6 +7628,11 @@ function App() {
   const openJobFilesForJob = (jobId: number) => {
     setJobFilesFocusId(jobId);
     setActiveView("jobfiles");
+  };
+
+  const openBiddingWorkspace = (mode: "resume" | "new") => {
+    setBiddingEntryMode(mode);
+    setActiveView("bidding");
   };
 
   useEffect(() => {
@@ -6784,7 +7805,13 @@ function App() {
             <button
               key={item.key}
               className={`nav-item${activeView === item.key ? " active" : ""}`}
-              onClick={() => setActiveView(item.key)}
+              onClick={() => {
+                if (item.key === "bidding") {
+                  openBiddingWorkspace("resume");
+                  return;
+                }
+                setActiveView(item.key);
+              }}
               title={isSidebarCollapsed ? item.label : undefined}
               type="button"
             >
@@ -6811,8 +7838,21 @@ function App() {
           </button>
         </header>
 
-        {activeView === "dashboard" ? <DashboardView onNavigate={setActiveView} userId={authUser.user_id} /> : null}
-        {activeView === "bidding" ? <BiddingView userId={authUser.user_id} onOpenJobs={() => setActiveView("jobs")} /> : null}
+        {activeView === "dashboard" ? (
+          <DashboardView
+            onNavigate={setActiveView}
+            onCreateBidding={() => openBiddingWorkspace("new")}
+            onResumeBidding={() => openBiddingWorkspace("resume")}
+            userId={authUser.user_id}
+          />
+        ) : null}
+        {activeView === "bidding" ? (
+          <BiddingView
+            userId={authUser.user_id}
+            onOpenJobs={() => setActiveView("jobs")}
+            restoreDraftOnMount={biddingEntryMode === "resume"}
+          />
+        ) : null}
         {activeView === "jobs" ? <JobsView userId={authUser.user_id} onOpenJobFiles={openJobFilesForJob} /> : null}
         {activeView === "jobfiles" ? <JobFilesView userId={authUser.user_id} initialJobId={jobFilesFocusId} /> : null}
         {activeView === "calendar" ? (

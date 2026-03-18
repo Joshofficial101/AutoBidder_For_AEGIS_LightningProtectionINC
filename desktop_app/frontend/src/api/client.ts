@@ -1,6 +1,8 @@
 import {
   AuthLogoutResponse,
   AuthUser,
+  BidAutosaveRequest,
+  BidAutosaveResponse,
   BidConfirmResponse,
   BidPreviewBase64Request,
   BidPreviewRequest,
@@ -23,6 +25,11 @@ import {
   ParsePdfBase64Request,
   ParsePdfRequest,
   ParsePdfResponse,
+  PlanReviewBase64Request,
+  PlanReviewRequest,
+  PlanReviewResponse,
+  PlanReviewSaveRequest,
+  PlanReviewSaveResponse,
   ResetPasswordBackupRequest,
   RegisterRequest,
   VerifyPasswordRequest,
@@ -206,6 +213,23 @@ export function previewBid(payload: BidPreviewRequest): Promise<BidPreviewRespon
   });
 }
 
+export function getBidAutosave(): Promise<BidAutosaveResponse> {
+  return request<BidAutosaveResponse>("/api/v1/bids/autosave");
+}
+
+export function saveBidAutosave(payload: BidAutosaveRequest): Promise<BidAutosaveResponse> {
+  return request<BidAutosaveResponse>("/api/v1/bids/autosave", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function clearBidAutosave(): Promise<BidAutosaveResponse> {
+  return request<BidAutosaveResponse>("/api/v1/bids/autosave", {
+    method: "DELETE",
+  });
+}
+
 export function confirmBid(payload: BidPreviewRequest): Promise<BidConfirmResponse> {
   return request<BidConfirmResponse>("/api/v1/bids/confirm", {
     method: "POST",
@@ -232,6 +256,25 @@ export function parsePdf(payload: ParsePdfRequest): Promise<ParsePdfResponse> {
     method: "POST",
     body: JSON.stringify(payload),
   });
+}
+
+export function generatePlanReview(payload: PlanReviewRequest): Promise<PlanReviewResponse> {
+  return request<PlanReviewResponse>("/api/v1/plan-review/generate", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function savePlanReview(payload: PlanReviewSaveRequest): Promise<PlanReviewSaveResponse> {
+  return request<PlanReviewSaveResponse>("/api/v1/plan-review/save", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function loadPlanReview(projectName: string): Promise<PlanReviewResponse> {
+  const encoded = encodeURIComponent(projectName);
+  return request<PlanReviewResponse>(`/api/v1/plan-review/load?project_name=${encoded}`);
 }
 
 function fileToBase64(file: File): Promise<string> {
@@ -288,6 +331,41 @@ export async function parsePdfUpload(file: File): Promise<ParsePdfResponse> {
 
   throw new Error(
     "PDF upload route not found on running API. Restart the desktop app to load the latest API.",
+  );
+}
+
+export async function generatePlanReviewUpload(
+  file: File,
+  payload: Omit<PlanReviewRequest, "pdf_file_path">,
+): Promise<PlanReviewResponse> {
+  const base64Payload: PlanReviewBase64Request = {
+    file_name: file.name,
+    file_bytes_base64: await fileToBase64(file),
+    compliance_code: payload.compliance_code || "DUAL",
+    project_data: payload.project_data || {},
+  };
+  try {
+    return await request<PlanReviewResponse>("/api/v1/plan-review/generate/base64", {
+      method: "POST",
+      body: JSON.stringify(base64Payload),
+    });
+  } catch (base64Err) {
+    if (!isNotFoundError(base64Err)) {
+      throw base64Err;
+    }
+  }
+
+  const nativePath = getNativeFilePath(file);
+  if (nativePath) {
+    return generatePlanReview({
+      pdf_file_path: nativePath,
+      compliance_code: payload.compliance_code,
+      project_data: payload.project_data,
+    });
+  }
+
+  throw new Error(
+    "Plan review route not found on running API. Restart the desktop app to load the latest API.",
   );
 }
 

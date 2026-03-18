@@ -427,14 +427,23 @@ class BidRepository:
             )
     
     def load_autosave(self, user_id: int) -> Optional[Dict[str, Any]]:
+        record = self.load_autosave_record(user_id)
+        if not record:
+            return None
+        return record.get("payload")
+
+    def load_autosave_record(self, user_id: int) -> Optional[Dict[str, Any]]:
         row = self.db.fetchone(
-            "SELECT payload_json FROM Autosaves WHERE user_id = ?;",
+            "SELECT payload_json, updated_at FROM Autosaves WHERE user_id = ?;",
             (user_id,)
         )
         if not row:
             return None
         try:
-            return json.loads(row[0])
+            return {
+                "payload": json.loads(row[0]),
+                "updated_at": str(row[1] or ""),
+            }
         except json.JSONDecodeError:
             return None
     
