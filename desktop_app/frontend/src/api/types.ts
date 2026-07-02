@@ -258,6 +258,8 @@ export type PlanReviewResponse = {
   components: PlanReviewComponent[];
   counts: PlanReviewCounts;
   warnings: string[];
+  background_image_base64?: string | null;
+  background_page_index?: number | null;
 };
 
 export type PlanReviewSaveResponse = {

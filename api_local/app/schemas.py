@@ -372,6 +372,8 @@ class PlanReviewResponse(ApiModel):
     components: List[PlanReviewComponent] = Field(default_factory=list)
     counts: PlanReviewCounts
     warnings: List[str] = Field(default_factory=list)
+    background_image_base64: Optional[str] = Field(default=None, description="Base64-encoded PNG of the PDF page as background")
+    background_page_index: Optional[int] = Field(default=None, description="Which PDF page was used for background (0-indexed)")
 
 
 class PlanReviewSaveRequest(ApiModel):

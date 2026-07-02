@@ -1938,7 +1938,8 @@ body {
 .plan-review-summary,
 .plan-review-tools,
 .plan-review-selected,
-.plan-review-warnings {
+.plan-review-warnings,
+.plan-review-view-options {
   border: 1px solid #c8d7eb;
   border-radius: 12px;
   background: #fff;
@@ -1950,9 +1951,51 @@ body {
 .plan-review-summary h4,
 .plan-review-tools h4,
 .plan-review-selected h4,
-.plan-review-warnings h4 {
+.plan-review-warnings h4,
+.plan-review-view-options h4 {
   margin: 0;
   color: #173a60;
+}
+
+.plan-background-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  color: #354f6c;
+}
+
+.plan-background-toggle input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+}
+
+.plan-opacity-slider {
+  display: grid;
+  gap: 4px;
+}
+
+.plan-opacity-slider span {
+  font-size: 0.85rem;
+  color: #5a7a9c;
+}
+
+.plan-opacity-slider input[type="range"] {
+  width: 100%;
+  cursor: pointer;
+}
+
+.plan-view-hint {
+  font-size: 0.75rem;
+  color: #6b8faf;
+  margin: 0;
+  font-style: italic;
+}
+
+.plan-background-image {
+  pointer-events: none;
 }
 
 .plan-review-tool-grid {

@@ -2425,6 +2425,8 @@ function BiddingView({
   const [planReview, setPlanReview] = useState<PlanReviewResponse | null>(null);
   const [planComponents, setPlanComponents] = useState<PlanReviewComponent[]>([]);
   const [selectedPlanComponentId, setSelectedPlanComponentId] = useState("");
+  const [showPlanBackground, setShowPlanBackground] = useState(true);
+  const [planBackgroundOpacity, setPlanBackgroundOpacity] = useState(0.35);
   const [isGeneratingPlan, setIsGeneratingPlan] = useState(false);
   const [isSavingPlan, setIsSavingPlan] = useState(false);
   const [isLoadingPlan, setIsLoadingPlan] = useState(false);
@@ -3957,14 +3959,27 @@ function BiddingView({
                       </pattern>
                     </defs>
                     <rect width={planReview.canvas_width} height={planReview.canvas_height} fill="#f5fbff" />
-                    <rect width={planReview.canvas_width} height={planReview.canvas_height} fill="url(#plan-grid-pattern)" />
+                    {planReview.background_image_base64 && showPlanBackground ? (
+                      <image
+                        href={`data:image/png;base64,${planReview.background_image_base64}`}
+                        x="0"
+                        y="0"
+                        width={planReview.canvas_width}
+                        height={planReview.canvas_height}
+                        preserveAspectRatio="xMidYMid meet"
+                        opacity={planBackgroundOpacity}
+                        className="plan-background-image"
+                      />
+                    ) : (
+                      <rect width={planReview.canvas_width} height={planReview.canvas_height} fill="url(#plan-grid-pattern)" />
+                    )}
                     <rect
                       x={planReview.footprint_bounds.x}
                       y={planReview.footprint_bounds.y}
                       width={planReview.footprint_bounds.width}
                       height={planReview.footprint_bounds.height}
                       rx="8"
-                      fill="#ffffff"
+                      fill={planReview.background_image_base64 && showPlanBackground ? "rgba(255,255,255,0.7)" : "#ffffff"}
                       stroke="#234f8b"
                       strokeWidth="3"
                     />
@@ -4081,6 +4096,35 @@ function BiddingView({
                       Delete Selected
                     </button>
                   </div>
+                  {planReview.background_image_base64 ? (
+                    <div className="plan-review-view-options">
+                      <h4>View Options</h4>
+                      <label className="plan-background-toggle">
+                        <input
+                          type="checkbox"
+                          checked={showPlanBackground}
+                          onChange={(e) => setShowPlanBackground(e.target.checked)}
+                        />
+                        <span>Show PDF Background</span>
+                      </label>
+                      {showPlanBackground ? (
+                        <label className="plan-opacity-slider">
+                          <span>Opacity: {Math.round(planBackgroundOpacity * 100)}%</span>
+                          <input
+                            type="range"
+                            min="0.1"
+                            max="0.8"
+                            step="0.05"
+                            value={planBackgroundOpacity}
+                            onChange={(e) => setPlanBackgroundOpacity(parseFloat(e.target.value))}
+                          />
+                        </label>
+                      ) : null}
+                      <p className="plan-view-hint">
+                        PDF page {(planReview.background_page_index ?? 0) + 1} shown as background
+                      </p>
+                    </div>
+                  ) : null}
                   <div className="plan-review-selected">
                     <h4>Selected Component</h4>
                     {selectedPlanComponent ? (

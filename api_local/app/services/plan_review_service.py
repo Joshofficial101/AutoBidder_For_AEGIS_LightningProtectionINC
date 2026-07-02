@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import io
 import math
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -12,6 +14,12 @@ from src.compliance.ul96a import UL96ACompliance
 from src.database.db_connector import DBConnector
 from src.database.work_plan_repository import WorkPlanRepository
 
+# Try to import PyMuPDF for PDF image extraction
+try:
+    import fitz  # PyMuPDF
+    HAS_PYMUPDF = True
+except ImportError:
+    HAS_PYMUPDF = False
 
 CANVAS_WIDTH = 1000.0
 CANVAS_HEIGHT = 700.0
@@ -264,6 +272,122 @@ def _calculate_requirements(project_data: Dict[str, Any], compliance_code: str) 
     return DualCompliance.check_combined_compliance(project_data)
 
 
+def _extract_pdf_page_image(
+    pdf_path: str,
+    page_index: int = 0,
+    target_width: int = 1000,
+    target_height: int = 700,
+) -> Optional[str]:
+    """
+    Extract a PDF page as a base64-encoded PNG image.
+    
+    Args:
+        pdf_path: Path to the PDF file
+        page_index: Which page to extract (0-indexed)
+        target_width: Target width for the image
+        target_height: Target height for the image
+    
+    Returns:
+        Base64-encoded PNG string, or None if extraction fails
+    """
+    if not HAS_PYMUPDF:
+        return None
+    
+    try:
+        doc = fitz.open(pdf_path)
+        if page_index >= len(doc):
+            page_index = 0
+        
+        page = doc[page_index]
+        
+        # Calculate scale to fit target dimensions while maintaining aspect ratio
+        page_rect = page.rect
+        scale_x = target_width / page_rect.width
+        scale_y = target_height / page_rect.height
+        scale = min(scale_x, scale_y)
+        
+        # Render page to pixmap
+        mat = fitz.Matrix(scale, scale)
+        pix = page.get_pixmap(matrix=mat, alpha=False)
+        
+        # Convert to PNG bytes
+        png_bytes = pix.tobytes("png")
+        
+        doc.close()
+        
+        # Encode as base64
+        return base64.b64encode(png_bytes).decode("utf-8")
+        
+    except Exception as e:
+        print(f"Error extracting PDF page image: {e}")
+        return None
+
+
+def _find_best_plan_page(pdf_path: str) -> int:
+    """
+    Find the best page to use as the building plan background.
+    
+    Looks for pages with:
+    - Floor plan indicators
+    - More graphical content than text
+    - Dimension annotations
+    
+    Returns the page index (0-indexed), defaults to 0.
+    """
+    if not HAS_PYMUPDF:
+        return 0
+    
+    try:
+        doc = fitz.open(pdf_path)
+        best_page = 0
+        best_score = -1
+        
+        for i in range(min(len(doc), 10)):  # Check first 10 pages max
+            page = doc[i]
+            text = page.get_text("text")
+            
+            # Score based on plan-related keywords and text density
+            score = 0
+            text_lower = text.lower()
+            
+            # Positive indicators (floor plan pages)
+            if "floor plan" in text_lower or "flr plan" in text_lower:
+                score += 50
+            if "roof plan" in text_lower:
+                score += 40
+            if "site plan" in text_lower:
+                score += 30
+            if "elevation" in text_lower:
+                score += 20
+            if "scale:" in text_lower or "scale =" in text_lower:
+                score += 15
+            
+            # Prefer pages with less text (more drawings)
+            text_length = len(text)
+            if text_length < 500:
+                score += 25
+            elif text_length < 1000:
+                score += 15
+            elif text_length < 2000:
+                score += 5
+            
+            # Skip cover pages and title pages
+            if "cover" in text_lower or "title sheet" in text_lower:
+                score -= 30
+            if "table of contents" in text_lower:
+                score -= 30
+            
+            if score > best_score:
+                best_score = score
+                best_page = i
+        
+        doc.close()
+        return best_page
+        
+    except Exception:
+        return 0
+
+
 def generate_plan_review(project_data: Dict[str, Any], compliance_code: str = "DUAL", pdf_file_path: Optional[str] = None) -> Dict[str, Any]:
     parsed_payload = parse_pdf(pdf_file_path) if pdf_file_path else None
     merged_project_data, warnings = _merge_project_data(project_data, parsed_payload)
@@ -326,6 +450,26 @@ def generate_plan_review(project_data: Dict[str, Any], compliance_code: str = "D
     if not pdf_file_path:
         warnings.append("Work plan is based on the current manual dimensions.")
 
+    # Extract PDF page as background image
+    background_image_base64 = None
+    background_page_index = None
+    
+    if pdf_file_path and HAS_PYMUPDF:
+        try:
+            # Find the best plan page to use as background
+            background_page_index = _find_best_plan_page(pdf_file_path)
+            background_image_base64 = _extract_pdf_page_image(
+                pdf_file_path,
+                page_index=background_page_index,
+                target_width=int(CANVAS_WIDTH),
+                target_height=int(CANVAS_HEIGHT),
+            )
+            if background_image_base64:
+                print(f"  Extracted PDF page {background_page_index + 1} as background image")
+        except Exception as e:
+            print(f"  Warning: Could not extract PDF background image: {e}")
+            warnings.append("Could not extract PDF page as background image.")
+
     return {
         "project_name": resolved["project_name"],
         "compliance_code": compliance_code,
@@ -345,6 +489,8 @@ def generate_plan_review(project_data: Dict[str, Any], compliance_code: str = "D
         "components": components,
         "counts": counts,
         "warnings": warnings,
+        "background_image_base64": background_image_base64,
+        "background_page_index": background_page_index,
     }
 
 
