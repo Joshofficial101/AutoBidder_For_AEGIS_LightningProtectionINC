@@ -11,6 +11,9 @@ openpyxl>=3.1.0
 # PDF handling (reading spec PDFs)
 pdfplumber>=0.10.0
 
+# OPTIMIZED PDF parsing (10x faster than pdfplumber)
+PyMuPDF>=1.24.0          # Fast PDF text extraction for CAD drawings
+
 # PDF generation (for submittal packages)
 reportlab>=4.0.0
 
@@ -22,6 +25,18 @@ PyExecJS>=1.5.1
 
 # Secure Password Hashing
 bcrypt>=4.1.2
+
+# Advanced PDF Parsing (for CAD-style building plans)
+# These enable OCR and computer vision features
+pdf2image>=1.16.0        # Convert PDF pages to images
+pytesseract>=0.3.10      # OCR text extraction from drawings
+Pillow>=10.0.0           # Image processing
+opencv-python>=4.8.0     # Computer vision for line/shape detection
+numpy>=1.24.0            # Required by opencv
+
+# Note: pytesseract requires Tesseract-OCR to be installed on your system
+# Windows: Download from https://github.com/UB-Mannheim/tesseract/wiki
+# After installing, add Tesseract to your PATH or set pytesseract.pytesseract.tesseract_cmd
 
 # Optional: for future GUI development
 # tkinter (comes with Python, no install needed)

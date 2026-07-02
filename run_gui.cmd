@@ -1,5 +1,6 @@
 @echo off
-REM --- Windows Launch Script for LightningBid ---
+REM --- Windows Launch Script for 
+Bid ---
 
 echo Activating Virtual Environment...
 call .venv\Scripts\activate.bat
@@ -13,4 +14,4 @@ if exist .venv\Scripts\python.exe (
 )
 
 REM Deactivate the environment after the application closes
-call .venv\Scripts\deactivate.bat
+call .venv\Scripts\deactivate.batimage.png

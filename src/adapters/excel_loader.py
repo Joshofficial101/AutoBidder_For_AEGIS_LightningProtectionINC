@@ -62,16 +62,21 @@ def _map_columns(df: pd.DataFrame) -> Dict[str, Optional[str]]:
     name_patterns = ["name", "description", "desc", "item", "material name", "product", "item name"]
     col_map["name"] = next((normalized_cols.get(pat) for pat in name_patterns if pat in normalized_cols), None)
     
-    # Material Type
-    type_patterns = ["type", "material type", "category", "cat", "material", "class"]
-    col_map["material_type"] = next((normalized_cols.get(pat) for pat in type_patterns if pat in normalized_cols), None)
+    # Material Type (prefer actual MATERIAL column over category)
+    material_patterns = ["material", "material type"]
+    col_map["material_type"] = next((normalized_cols.get(pat) for pat in material_patterns if pat in normalized_cols), None)
+    
+    # If no material column, fall back to category
+    if not col_map["material_type"]:
+        type_patterns = ["type", "category", "cat", "class"]
+        col_map["material_type"] = next((normalized_cols.get(pat) for pat in type_patterns if pat in normalized_cols), None)
     
     # Unit
     unit_patterns = ["unit", "uom", "units", "unit of measure", "measure"]
     col_map["unit"] = next((normalized_cols.get(pat) for pat in unit_patterns if pat in normalized_cols), None)
     
-    # Unit Price
-    price_patterns = ["price", "unit price", "unit_cost", "cost", "unit cost", "price each", "each"]
+    # Unit Price (prioritize LIST PRICE for ERICO files)
+    price_patterns = ["list price", "price", "unit price", "unit_cost", "cost", "unit cost", "price each", "each"]
     col_map["unit_price"] = next((normalized_cols.get(pat) for pat in price_patterns if pat in normalized_cols), None)
     
     # Labor Rate

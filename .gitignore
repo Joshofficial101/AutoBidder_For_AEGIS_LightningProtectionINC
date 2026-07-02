@@ -6,3 +6,19 @@ data/outputs/
 .idea/
 .vscode/
 /nul
+
+# Build artifacts
+build/
+dist/
+*.spec
+*.egg-info/
+
+# PDF Processing Tools (installed locally)
+poppler/
+tesseract/
+
+# Test files
+test_*.py
+check_*.py
+install_*.py
+*_installer.exe
